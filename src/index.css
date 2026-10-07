@@ -1,0 +1,49 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --color-background: #0a0a0f;
+  --color-surface: #111118;
+  --color-surface-2: #1a1a24;
+  --color-surface-3: #22222f;
+  --color-border: #2a2a3a;
+  --color-primary: #4f6ef7;
+  --color-primary-dim: #3a54d4;
+  --color-accent: #7c3aed;
+  --color-accent-2: #06b6d4;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-text: #f0f0ff;
+  --color-text-2: #a0a0c0;
+  --color-text-3: #5a5a7a;
+  --font-sans: 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: #0a0a0f;
+  color: #f0f0ff;
+  margin: 0;
+  overflow: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 0px;
+}
+
+.phone-scroll {
+  scrollbar-width: none;
+  overflow-y: auto;
+  -ms-overflow-style: none;
+}
+
+.phone-scroll::-webkit-scrollbar {
+  display: none;
+}
