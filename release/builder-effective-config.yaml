@@ -1,0 +1,17 @@
+directories:
+  output: release
+  buildResources: build
+appId: io.devio.desktop
+productName: dev.io
+files:
+  - filter:
+      - dist/**/*
+      - server/**/*
+      - electron/**/*
+      - package.json
+linux:
+  target:
+    - AppImage
+    - dir
+  category: Development
+electronVersion: 45.0.0

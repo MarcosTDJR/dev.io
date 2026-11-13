@@ -1,0 +1,26 @@
+name: Authorized DAST scan
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 2 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  wapiti:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate target configuration
+        env:
+          DAST_TARGET_URL: ${{ secrets.DAST_TARGET_URL }}
+        run: test -n "$DAST_TARGET_URL"
+      - name: Run Wapiti against the authorized staging target
+        env:
+          DAST_TARGET_URL: ${{ secrets.DAST_TARGET_URL }}
+        run: |
+          docker run --rm \
+            -v "$PWD:/report" \
+            cybersecsi/ethical-hacking-wapiti \
+            wapiti -u "$DAST_TARGET_URL" -f html -o /report/wapiti-report
