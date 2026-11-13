@@ -34,6 +34,119 @@ body {
   overflow: hidden;
 }
 
+.desktop-app {
+  width: 100vw;
+  height: 100vh;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 20% 10%, #1a1a3a 0%, #08080e 68%);
+  font-family: 'Inter', sans-serif;
+}
+
+.desktop-sidebar {
+  width: 248px;
+  flex: 0 0 248px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: rgba(16, 16, 26, 0.96);
+  border-right: 1px solid #2a2a44;
+  padding: 28px 14px 20px;
+}
+
+.desktop-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 30px;
+  color: #f0f0ff;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.desktop-nav-caption {
+  padding: 0 14px 10px;
+  color: #55557a;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.desktop-content {
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+  background: #08080e;
+}
+
+.desktop-content-auth {
+  width: 100%;
+}
+
+@media (max-width: 1100px) {
+  .desktop-app {
+    min-width: 0;
+  }
+
+  .desktop-sidebar {
+    width: 208px;
+    flex-basis: 208px;
+  }
+}
+
+@media (max-width: 720px) {
+  .desktop-app {
+    display: block;
+    min-height: 100dvh;
+    height: 100dvh;
+  }
+
+  .desktop-sidebar {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 20;
+    width: 100%;
+    height: 68px;
+    padding: 6px 8px;
+    border-right: 0;
+    border-top: 1px solid #2a2a44;
+  }
+
+  .desktop-brand,
+  .desktop-nav-caption {
+    display: none;
+  }
+
+  .desktop-sidebar > div:last-child {
+    height: 100%;
+    padding: 0;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-around;
+    gap: 2px;
+  }
+
+  .desktop-sidebar > div:last-child button {
+    flex: 1;
+    justify-content: center;
+    padding: 4px;
+  }
+
+  .desktop-sidebar > div:last-child button span {
+    display: none;
+  }
+
+  .desktop-content {
+    width: 100%;
+    height: 100dvh;
+    padding-bottom: 68px;
+  }
+}
+
 ::-webkit-scrollbar {
   width: 0px;
 }
