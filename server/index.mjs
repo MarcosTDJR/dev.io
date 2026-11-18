@@ -1,3 +1,4 @@
+import "dotenv/config"
 import crypto from "node:crypto"
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
@@ -6,10 +7,13 @@ import { fileURLToPath } from "node:url"
 import { DatabaseSync } from "node:sqlite"
 import express from "express"
 import multer from "multer"
+import nodemailer from "nodemailer"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const dataDirectory = process.env.DEVIO_DATA_DIR || path.join(root, "data")
-const storageDirectory = process.env.DEVIO_STORAGE_DIR || path.join(root, "storage", "projects")
+const storageDirectory =
+  process.env.DEVIO_STORAGE_DIR || path.join(root, "storage", "projects")
+const avatarDirectory = path.join(storageDirectory, "avatars")
 fs.mkdirSync(dataDirectory, { recursive: true })
 fs.mkdirSync(storageDirectory, { recursive: true })
 
@@ -25,6 +29,11 @@ db.exec(`
     email_verified INTEGER NOT NULL DEFAULT 0,
     confirmation_token_hash TEXT,
     confirmation_expires_at TEXT,
+    password_reset_token_hash TEXT,
+    password_reset_expires_at TEXT,
+    password_changed_at TEXT,
+    bio TEXT NOT NULL DEFAULT '',
+    avatar_path TEXT,
     created_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS sessions (
@@ -54,15 +63,34 @@ db.exec(`
   );
 `)
 
-const userColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name)
-if (!userColumns.includes("confirmation_token_hash")) db.exec("ALTER TABLE users ADD COLUMN confirmation_token_hash TEXT")
-if (!userColumns.includes("confirmation_expires_at")) db.exec("ALTER TABLE users ADD COLUMN confirmation_expires_at TEXT")
-if (!userColumns.includes("google_sub")) db.exec("ALTER TABLE users ADD COLUMN google_sub TEXT")
-db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub_unique ON users(google_sub) WHERE google_sub IS NOT NULL")
+const userColumns = db
+  .prepare("PRAGMA table_info(users)")
+  .all()
+  .map((column) => column.name)
+if (!userColumns.includes("confirmation_token_hash"))
+  db.exec("ALTER TABLE users ADD COLUMN confirmation_token_hash TEXT")
+if (!userColumns.includes("confirmation_expires_at"))
+  db.exec("ALTER TABLE users ADD COLUMN confirmation_expires_at TEXT")
+if (!userColumns.includes("google_sub"))
+  db.exec("ALTER TABLE users ADD COLUMN google_sub TEXT")
+if (!userColumns.includes("password_reset_token_hash"))
+  db.exec("ALTER TABLE users ADD COLUMN password_reset_token_hash TEXT")
+if (!userColumns.includes("password_reset_expires_at"))
+  db.exec("ALTER TABLE users ADD COLUMN password_reset_expires_at TEXT")
+if (!userColumns.includes("password_changed_at"))
+  db.exec("ALTER TABLE users ADD COLUMN password_changed_at TEXT")
+if (!userColumns.includes("bio"))
+  db.exec("ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''")
+if (!userColumns.includes("avatar_path"))
+  db.exec("ALTER TABLE users ADD COLUMN avatar_path TEXT")
+db.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub_unique ON users(google_sub) WHERE google_sub IS NOT NULL",
+)
 
 const now = () => new Date().toISOString()
 const id = () => crypto.randomUUID()
-const hashToken = (token) => crypto.createHash("sha256").update(token).digest("hex")
+const hashToken = (token) =>
+  crypto.createHash("sha256").update(token).digest("hex")
 const sessionCookie = "devio_session"
 
 function passwordHash(password, salt = crypto.randomBytes(16).toString("hex")) {
@@ -71,15 +99,98 @@ function passwordHash(password, salt = crypto.randomBytes(16).toString("hex")) {
 }
 
 function verifyPassword(password, stored) {
-  const [, salt, expected] = stored.split("$")
+  const [, salt, expected] = String(stored || "").split("$")
+  if (!salt || !expected || !/^[a-f0-9]{128}$/i.test(expected)) return false
   const actual = crypto.scryptSync(password, salt, 64).toString("hex")
-  return crypto.timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"))
+  return crypto.timingSafeEqual(
+    Buffer.from(actual, "hex"),
+    Buffer.from(expected, "hex"),
+  )
+}
+
+const smtpHost = process.env.SMTP_HOST
+const smtpPort = Number(process.env.SMTP_PORT || 587)
+const mailer = smtpHost
+  ? nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: process.env.SMTP_SECURE === "true" || smtpPort === 465,
+      auth: process.env.SMTP_USER
+        ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD }
+        : undefined,
+    })
+  : null
+const mailConfigured = Boolean(mailer && process.env.SMTP_FROM)
+const appUrl = (
+  process.env.PUBLIC_APP_URL ||
+  process.env.WEB_ORIGIN ||
+  `http://localhost:${process.env.PORT || 8443}`
+).replace(/\/+$/, "")
+const passwordMaxAgeMs = 365 * 24 * 60 * 60 * 1000
+
+function escapeHtml(value) {
+  return String(value).replace(
+    /[&<>"']/g,
+    (char) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[char],
+  )
+}
+
+function logEmailFailure(purpose, error) {
+  console.error(
+    JSON.stringify({
+      timestamp: now(),
+      event: "email.delivery_failed",
+      purpose,
+      code: error?.code || "UNKNOWN",
+      command: error?.command || "unknown",
+    }),
+  )
+}
+
+async function sendActionEmail({ to, subject, text, html }) {
+  if (!mailer || !process.env.SMTP_FROM) return false
+  await mailer.sendMail({
+    from: process.env.SMTP_FROM,
+    to,
+    subject,
+    text,
+    html,
+  })
+  return true
+}
+
+if (smtpHost && !process.env.SMTP_FROM) {
+  console.error(
+    JSON.stringify({
+      timestamp: now(),
+      event: "email.configuration_invalid",
+      reason: "SMTP_FROM is required when SMTP_HOST is configured",
+    }),
+  )
+}
+if (process.env.NODE_ENV === "production" && !mailConfigured) {
+  console.error(
+    JSON.stringify({
+      timestamp: now(),
+      event: "email.configuration_missing",
+      reason: "SMTP_HOST and SMTP_FROM are required for account email flows",
+    }),
+  )
 }
 
 function setSession(res, userId) {
   const token = crypto.randomBytes(32).toString("hex")
   const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7).toISOString()
-  db.prepare("INSERT INTO sessions (id_hash, user_id, expires_at) VALUES (?, ?, ?)").run(hashToken(token), userId, expiresAt)
+  db.prepare(
+    "INSERT INTO sessions (id_hash, user_id, expires_at) VALUES (?, ?, ?)",
+  ).run(hashToken(token), userId, expiresAt)
   res.cookie(sessionCookie, token, {
     httpOnly: true,
     sameSite: "lax",
@@ -91,15 +202,22 @@ function setSession(res, userId) {
 function currentUser(req) {
   const token = req.headers.cookie?.match(/(?:^|; )devio_session=([^;]+)/)?.[1]
   if (!token) return null
-  return db.prepare(`
+  return db
+    .prepare(`
     SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id
     WHERE sessions.id_hash = ? AND sessions.expires_at > ?
-  `).get(hashToken(token), now())
+  `)
+    .get(hashToken(token), now())
 }
 
 function requireUser(req, res, next) {
   const user = currentUser(req)
-  if (!user) return res.status(401).json({ error: "Faça login para continuar." })
+  if (!user)
+    return res.status(401).json({ error: "Faça login para continuar." })
+  if (!user.email_verified)
+    return res
+      .status(403)
+      .json({ error: "Confirme seu e-mail antes de continuar." })
   req.user = user
   next()
 }
@@ -121,16 +239,53 @@ function publicProject(row) {
   }
 }
 
+function publicUser(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    username: user.username,
+    email: user.email,
+    emailVerified: Boolean(user.email_verified),
+    bio: user.bio || "",
+    avatarUrl: user.avatar_path
+      ? `/api/auth/avatar?v=${encodeURIComponent(String(Date.now()))}`
+      : null,
+  }
+}
+
+function storedAvatarPath(value) {
+  if (!value) return null
+  const resolved = path.resolve(value)
+  const directory = path.resolve(avatarDirectory)
+  return resolved.startsWith(`${directory}${path.sep}`) ? resolved : null
+}
+
 function scanArchive(file) {
   const extension = path.extname(file.originalname).toLowerCase()
   const allowed = [".zip", ".gz", ".tgz"]
-  if (!allowed.includes(extension) && !file.originalname.toLowerCase().endsWith(".tar.gz")) {
-    return { approved: false, reason: "Apenas arquivos .zip e .tar.gz são aceitos." }
+  if (
+    !allowed.includes(extension) &&
+    !file.originalname.toLowerCase().endsWith(".tar.gz")
+  ) {
+    return {
+      approved: false,
+      reason: "Apenas arquivos .zip e .tar.gz são aceitos.",
+    }
   }
-  const zipSignature = file.buffer.subarray(0, 2).equals(Buffer.from([0x50, 0x4b]))
-  const gzipSignature = file.buffer.subarray(0, 2).equals(Buffer.from([0x1f, 0x8b]))
-  if ((extension === ".zip" && !zipSignature) || (extension !== ".zip" && !gzipSignature)) {
-    return { approved: false, reason: "A assinatura do arquivo não corresponde à extensão." }
+  const zipSignature = file.buffer
+    .subarray(0, 2)
+    .equals(Buffer.from([0x50, 0x4b]))
+  const gzipSignature = file.buffer
+    .subarray(0, 2)
+    .equals(Buffer.from([0x1f, 0x8b]))
+  if (
+    (extension === ".zip" && !zipSignature) ||
+    (extension !== ".zip" && !gzipSignature)
+  ) {
+    return {
+      approved: false,
+      reason: "A assinatura do arquivo não corresponde à extensão.",
+    }
   }
   if (file.originalname.includes("..") || path.isAbsolute(file.originalname)) {
     return { approved: false, reason: "Nome de arquivo inválido." }
@@ -140,15 +295,34 @@ function scanArchive(file) {
   fs.writeFileSync(temporaryPath, file.buffer, { mode: 0o600 })
   try {
     const command = extension === ".zip" ? "unzip" : "tar"
-    const args = extension === ".zip" ? ["-Z1", temporaryPath] : ["-tzf", temporaryPath]
-    const listing = execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 2 * 1024 * 1024 })
-    const unsafeEntry = listing.split("\n").find((entry) => entry.startsWith("/") || entry.split("/").includes(".."))
-    if (unsafeEntry) return { approved: false, reason: "O arquivo contém caminho de extração inseguro." }
-    const entries = listing.split("\n").map((entry) => entry.trim()).filter(Boolean)
-    const hasPreview = entries.some((entry) => entry === "index.html" || entry === "./index.html")
+    const args =
+      extension === ".zip" ? ["-Z1", temporaryPath] : ["-tzf", temporaryPath]
+    const listing = execFileSync(command, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 2 * 1024 * 1024,
+    })
+    const unsafeEntry = listing
+      .split("\n")
+      .find((entry) => entry.startsWith("/") || entry.split("/").includes(".."))
+    if (unsafeEntry)
+      return {
+        approved: false,
+        reason: "O arquivo contém caminho de extração inseguro.",
+      }
+    const entries = listing
+      .split("\n")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+    const hasPreview = entries.some(
+      (entry) => entry === "index.html" || entry === "./index.html",
+    )
     return { approved: true, hasPreview }
   } catch {
-    return { approved: false, reason: "Não foi possível validar a integridade do arquivo." }
+    return {
+      approved: false,
+      reason: "Não foi possível validar a integridade do arquivo.",
+    }
   } finally {
     fs.rmSync(temporaryPath, { force: true })
   }
@@ -156,13 +330,33 @@ function scanArchive(file) {
 
 const app = express()
 app.use(express.json({ limit: "1mb" }))
-if (process.env.NODE_ENV === "production") app.use(express.static(path.join(root, "dist")))
+if (process.env.NODE_ENV === "production")
+  app.use(express.static(path.join(root, "dist")))
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", process.env.WEB_ORIGIN || "http://localhost:8443")
+  res.setHeader(
+    "Access-Control-Allow-Origin",
+    process.env.WEB_ORIGIN || "http://localhost:8443",
+  )
   res.setHeader("Access-Control-Allow-Credentials", "true")
   res.setHeader("Access-Control-Allow-Headers", "Content-Type")
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
   if (req.method === "OPTIONS") return res.sendStatus(204)
+  next()
+})
+app.use((req, res, next) => {
+  const startedAt = Date.now()
+  res.on("finish", () => {
+    console.log(
+      JSON.stringify({
+        timestamp: now(),
+        event: "http.request",
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        durationMs: Date.now() - startedAt,
+      }),
+    )
+  })
   next()
 })
 
@@ -170,163 +364,679 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024, files: 1 },
 })
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024, files: 1 },
+})
 
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }))
 
-app.post("/api/auth/register", (req, res) => {
+app.post("/api/auth/register", async (req, res) => {
   const { name, username, email, password } = req.body || {}
-  if (!name || !username || !email || !password || password.length < 8) {
-    return res.status(400).json({ error: "Nome, usuário, e-mail e senha com 8 caracteres são obrigatórios." })
+  if (
+    ![name, username, email, password].every(
+      (value) => typeof value === "string" && value.trim(),
+    ) ||
+    password.length < 8 ||
+    password.length > 128
+  ) {
+    return res.status(400).json({
+      error:
+        "Nome, usuário, e-mail e senha de 8 a 128 caracteres são obrigatórios.",
+    })
   }
-  const normalizedEmail = String(email).trim().toLowerCase()
-  const normalizedUsername = String(username).trim().replace(/^@/, "").toLowerCase()
-  if (!/^\S+@\S+\.\S+$/.test(normalizedEmail) || !/^[a-z0-9_]{3,30}$/.test(normalizedUsername)) {
-    return res.status(400).json({ error: "E-mail ou nome de usuário inválido." })
+  const normalizedName = name.trim()
+  const normalizedEmail = email.trim().toLowerCase()
+  const normalizedUsername = username.trim().replace(/^@/, "").toLowerCase()
+  if (
+    !/^\S+@\S+\.\S+$/.test(normalizedEmail) ||
+    !/^[a-z0-9_]{3,30}$/.test(normalizedUsername)
+  ) {
+    return res
+      .status(400)
+      .json({ error: "E-mail ou nome de usuário inválido." })
   }
   try {
     const userId = id()
     const confirmationToken = crypto.randomBytes(24).toString("hex")
-    db.prepare("INSERT INTO users (id, name, username, email, password_hash, confirmation_token_hash, confirmation_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(userId, String(name).trim(), normalizedUsername, normalizedEmail, passwordHash(password), hashToken(confirmationToken), new Date(Date.now() + 1000 * 60 * 30).toISOString(), now())
-    setSession(res, userId)
-    res.status(201).json({ user: { id: userId, name, username: normalizedUsername, email: normalizedEmail, emailVerified: false }, confirmationToken: process.env.NODE_ENV === "production" ? undefined : confirmationToken })
+    db.prepare(
+      "INSERT INTO users (id, name, username, email, password_hash, confirmation_token_hash, confirmation_expires_at, password_changed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      userId,
+      normalizedName,
+      normalizedUsername,
+      normalizedEmail,
+      passwordHash(password),
+      hashToken(confirmationToken),
+      new Date(Date.now() + 1000 * 60 * 30).toISOString(),
+      now(),
+      now(),
+    )
+    let emailSent = false
+    try {
+      const link = `${appUrl}/#confirmEmail=${encodeURIComponent(confirmationToken)}`
+      emailSent = await sendActionEmail({
+        to: normalizedEmail,
+        subject: "Confirme seu e-mail — dev.io",
+        text: `Olá, ${normalizedName}. Confirme sua conta no dev.io: ${link}\nO link expira em 30 minutos.`,
+        html: `<p>Olá, ${escapeHtml(normalizedName)}.</p><p><a href="${link}">Confirme sua conta no dev.io</a>. Este link expira em 30 minutos.</p>`,
+      })
+    } catch (error) {
+      logEmailFailure("confirmation", error)
+    }
+    res.status(201).json({
+      user: {
+        id: userId,
+        name: normalizedName,
+        username: normalizedUsername,
+        email: normalizedEmail,
+        emailVerified: false,
+      },
+      emailSent,
+      confirmationToken:
+        !mailConfigured && process.env.NODE_ENV !== "production"
+          ? confirmationToken
+          : undefined,
+    })
   } catch (error) {
-    const message = String(error).includes("UNIQUE") ? "E-mail ou usuário já cadastrado." : "Não foi possível criar a conta."
-    res.status(409).json({ error: message })
+    const message = String(error).includes("UNIQUE")
+      ? "E-mail ou usuário já cadastrado."
+      : "Não foi possível criar a conta."
+    res
+      .status(String(error).includes("UNIQUE") ? 409 : 500)
+      .json({ error: message })
   }
 })
 
 app.post("/api/auth/login", (req, res) => {
   const { email, password } = req.body || {}
-  const user = db.prepare("SELECT * FROM users WHERE email = ?").get(String(email || "").trim().toLowerCase())
-  if (!user || !verifyPassword(String(password || ""), user.password_hash)) return res.status(401).json({ error: "E-mail ou senha inválidos." })
-  if (!user.email_verified) return res.status(403).json({ error: "Confirme seu e-mail antes de entrar." })
+  if (
+    typeof email !== "string" ||
+    typeof password !== "string" ||
+    !email.trim() ||
+    !password ||
+    password.length > 128
+  ) {
+    return res.status(400).json({ error: "Informe seu e-mail e senha." })
+  }
+  const user = db
+    .prepare("SELECT * FROM users WHERE email = ?")
+    .get(email.trim().toLowerCase())
+  if (!user || !verifyPassword(password, user.password_hash))
+    return res.status(401).json({ error: "E-mail ou senha inválidos." })
+  if (!user.email_verified)
+    return res
+      .status(403)
+      .json({ error: "Confirme seu e-mail antes de entrar." })
   setSession(res, user.id)
-  res.json({ user: { id: user.id, name: user.name, username: user.username, email: user.email, emailVerified: true } })
+  const changedAt = Date.parse(
+    user.password_changed_at || user.created_at || now(),
+  )
+  res.json({
+    user: {
+      id: user.id,
+      name: user.name,
+      username: user.username,
+      email: user.email,
+      emailVerified: true,
+    },
+    passwordChangeRequired: Date.now() - changedAt >= passwordMaxAgeMs,
+  })
+})
+
+app.post("/api/auth/resend-confirmation", async (req, res) => {
+  const email =
+    typeof req.body?.email === "string"
+      ? req.body.email.trim().toLowerCase()
+      : ""
+  const user = email
+    ? db
+        .prepare(
+          "SELECT id, name, email, email_verified FROM users WHERE email = ?",
+        )
+        .get(email)
+    : null
+  let confirmationToken
+  let emailSent = false
+  if (user && !user.email_verified) {
+    confirmationToken = crypto.randomBytes(24).toString("hex")
+    db.prepare(
+      "UPDATE users SET confirmation_token_hash = ?, confirmation_expires_at = ? WHERE id = ?",
+    ).run(
+      hashToken(confirmationToken),
+      new Date(Date.now() + 1000 * 60 * 30).toISOString(),
+      user.id,
+    )
+    try {
+      const link = `${appUrl}/#confirmEmail=${encodeURIComponent(confirmationToken)}`
+      emailSent = await sendActionEmail({
+        to: email,
+        subject: "Confirme seu e-mail — dev.io",
+        text: `Olá, ${user.name}. Confirme sua conta no dev.io: ${link}\nO link expira em 30 minutos.`,
+        html: `<p>Olá, ${escapeHtml(user.name)}.</p><p><a href="${link}">Confirme sua conta no dev.io</a>. Este link expira em 30 minutos.</p>`,
+      })
+    } catch (error) {
+      logEmailFailure("confirmation", error)
+    }
+  }
+  res.json({
+    ok: true,
+    confirmationToken:
+      user && !mailConfigured && process.env.NODE_ENV !== "production"
+        ? confirmationToken
+        : undefined,
+    emailSent,
+  })
+})
+
+app.post("/api/auth/password-reset", async (req, res) => {
+  const email =
+    typeof req.body?.email === "string"
+      ? req.body.email.trim().toLowerCase()
+      : ""
+  const user = email
+    ? db
+        .prepare(
+          "SELECT id, name, email FROM users WHERE email = ? AND email_verified = 1",
+        )
+        .get(email)
+    : null
+  let resetToken
+  let emailSent = false
+  if (user) {
+    resetToken = crypto.randomBytes(24).toString("hex")
+    db.prepare(
+      "UPDATE users SET password_reset_token_hash = ?, password_reset_expires_at = ? WHERE id = ?",
+    ).run(
+      hashToken(resetToken),
+      new Date(Date.now() + 1000 * 60 * 30).toISOString(),
+      user.id,
+    )
+    try {
+      const link = `${appUrl}/#resetPassword=${encodeURIComponent(resetToken)}`
+      emailSent = await sendActionEmail({
+        to: email,
+        subject: "Redefina sua senha — dev.io",
+        text: `Olá, ${user.name}. Redefina sua senha: ${link}\nO link expira em 30 minutos. Se você não solicitou esta alteração, ignore este e-mail.`,
+        html: `<p>Olá, ${escapeHtml(user.name)}.</p><p><a href="${link}">Redefina sua senha no dev.io</a>. Este link expira em 30 minutos. Se você não solicitou esta alteração, ignore este e-mail.</p>`,
+      })
+    } catch (error) {
+      logEmailFailure("password_reset", error)
+    }
+  }
+  res.json({
+    ok: true,
+    resetToken:
+      user && !mailConfigured && process.env.NODE_ENV !== "production"
+        ? resetToken
+        : undefined,
+    emailSent,
+  })
+})
+
+app.post("/api/auth/password-reset/complete", (req, res) => {
+  const { token, password } = req.body || {}
+  if (
+    typeof token !== "string" ||
+    !token ||
+    typeof password !== "string" ||
+    password.length < 8 ||
+    password.length > 128
+  ) {
+    return res.status(400).json({
+      error: "Token e senha de 8 a 128 caracteres são obrigatórios.",
+    })
+  }
+  const user = db
+    .prepare(
+      "SELECT id FROM users WHERE password_reset_token_hash = ? AND password_reset_expires_at > ?",
+    )
+    .get(hashToken(token), now())
+  if (!user)
+    return res
+      .status(400)
+      .json({ error: "Link de recuperação inválido ou expirado." })
+  db.prepare(
+    "UPDATE users SET password_hash = ?, password_changed_at = ?, password_reset_token_hash = NULL, password_reset_expires_at = NULL WHERE id = ?",
+  ).run(passwordHash(password), now(), user.id)
+  db.prepare("DELETE FROM sessions WHERE user_id = ?").run(user.id)
+  res.json({ ok: true })
+})
+
+app.put("/api/auth/password", requireUser, (req, res) => {
+  const { currentPassword, newPassword } = req.body || {}
+  if (
+    typeof currentPassword !== "string" ||
+    typeof newPassword !== "string" ||
+    newPassword.length < 8 ||
+    newPassword.length > 128
+  ) {
+    return res
+      .status(400)
+      .json({ error: "A nova senha deve ter de 8 a 128 caracteres." })
+  }
+  if (!verifyPassword(currentPassword, req.user.password_hash)) {
+    return res.status(401).json({ error: "Senha atual incorreta." })
+  }
+  db.prepare(
+    "UPDATE users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
+  ).run(passwordHash(newPassword), now(), req.user.id)
+  db.prepare("DELETE FROM sessions WHERE user_id = ?").run(req.user.id)
+  setSession(res, req.user.id)
+  res.json({ ok: true })
 })
 
 app.post("/api/auth/google", async (req, res) => {
   const credential = String(req.body?.credential || "")
   const clientId = process.env.GOOGLE_CLIENT_ID
-  if (!clientId) return res.status(503).json({ error: "Login Google não configurado no servidor." })
-  if (!credential) return res.status(400).json({ error: "Credencial Google obrigatória." })
+  if (!clientId)
+    return res
+      .status(503)
+      .json({ error: "Login Google não configurado no servidor." })
+  if (!credential)
+    return res.status(400).json({ error: "Credencial Google obrigatória." })
   try {
-    const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`)
+    const response = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`,
+    )
     const profile = await response.json()
-    if (!response.ok || profile.aud !== clientId || profile.email_verified !== "true" || !profile.email || !profile.sub) {
-      return res.status(401).json({ error: "Credencial Google inválida ou não verificada." })
+    if (
+      !response.ok ||
+      profile.aud !== clientId ||
+      profile.email_verified !== "true" ||
+      !profile.email ||
+      !profile.sub
+    ) {
+      return res
+        .status(401)
+        .json({ error: "Credencial Google inválida ou não verificada." })
     }
     const email = String(profile.email).trim().toLowerCase()
-    let user = db.prepare("SELECT * FROM users WHERE google_sub = ? OR email = ?").get(String(profile.sub), email)
+    let user = db
+      .prepare("SELECT * FROM users WHERE google_sub = ? OR email = ?")
+      .get(String(profile.sub), email)
     if (!user) {
-      const baseUsername = email.split("@")[0].replace(/[^a-z0-9_]/g, "").slice(0, 24) || "google_user"
+      const baseUsername =
+        email
+          .split("@")[0]
+          .replace(/[^a-z0-9_]/g, "")
+          .slice(0, 24) || "google_user"
       let username = baseUsername
       let suffix = 1
-      while (db.prepare("SELECT id FROM users WHERE username = ?").get(username)) username = `${baseUsername.slice(0, 25 - String(suffix).length)}${suffix++}`
+      while (
+        db.prepare("SELECT id FROM users WHERE username = ?").get(username)
+      )
+        username = `${baseUsername.slice(0, 25 - String(suffix).length)}${suffix++}`
       const userId = id()
-      db.prepare("INSERT INTO users (id, name, username, email, password_hash, email_verified, google_sub, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").run(userId, String(profile.name || username).trim(), username, email, passwordHash(crypto.randomBytes(32).toString("hex")), String(profile.sub), now())
+      db.prepare(
+        "INSERT INTO users (id, name, username, email, password_hash, email_verified, google_sub, password_changed_at, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
+      ).run(
+        userId,
+        String(profile.name || username).trim(),
+        username,
+        email,
+        passwordHash(crypto.randomBytes(32).toString("hex")),
+        String(profile.sub),
+        now(),
+        now(),
+      )
       user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId)
     } else if (!user.google_sub) {
-      db.prepare("UPDATE users SET google_sub = ?, email_verified = 1 WHERE id = ?").run(String(profile.sub), user.id)
+      db.prepare(
+        "UPDATE users SET google_sub = ?, email_verified = 1 WHERE id = ?",
+      ).run(String(profile.sub), user.id)
       user = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id)
     }
     setSession(res, user.id)
-    return res.json({ user: { id: user.id, name: user.name, username: user.username, email: user.email, emailVerified: true } })
+    return res.json({
+      user: {
+        id: user.id,
+        name: user.name,
+        username: user.username,
+        email: user.email,
+        emailVerified: true,
+      },
+    })
   } catch {
-    return res.status(502).json({ error: "Não foi possível validar a conta Google." })
+    return res
+      .status(502)
+      .json({ error: "Não foi possível validar a conta Google." })
   }
 })
 
 app.post("/api/auth/confirm-email", (req, res) => {
-  if (!req.body?.token) return res.status(400).json({ error: "Token de confirmação obrigatório." })
-  const user = currentUser(req)
-  if (!user) return res.status(401).json({ error: "Sessão de cadastro expirada." })
-  if (user.email_verified || user.confirmation_token_hash !== hashToken(String(req.body.token)) || user.confirmation_expires_at <= now()) {
-    return res.status(400).json({ error: "Token de confirmação inválido ou expirado." })
+  if (typeof req.body?.token !== "string" || !req.body.token)
+    return res.status(400).json({ error: "Token de confirmação obrigatório." })
+  const user = db
+    .prepare(
+      "SELECT id, email_verified FROM users WHERE confirmation_token_hash = ? AND confirmation_expires_at > ?",
+    )
+    .get(hashToken(req.body.token), now())
+  if (!user || user.email_verified) {
+    return res
+      .status(400)
+      .json({ error: "Token de confirmação inválido ou expirado." })
   }
-  db.prepare("UPDATE users SET email_verified = 1, confirmation_token_hash = NULL, confirmation_expires_at = NULL WHERE id = ?").run(user.id)
+  db.prepare(
+    "UPDATE users SET email_verified = 1, confirmation_token_hash = NULL, confirmation_expires_at = NULL WHERE id = ?",
+  ).run(user.id)
   res.json({ ok: true })
 })
 
 app.get("/api/auth/me", (req, res) => {
   const user = currentUser(req)
-  res.json({ user: user ? { id: user.id, name: user.name, username: user.username, email: user.email, emailVerified: Boolean(user.email_verified) } : null })
+  const stats = user
+    ? db
+        .prepare(
+          "SELECT (SELECT COUNT(*) FROM projects WHERE owner_id = ?) AS projectCount, (SELECT COUNT(*) FROM library WHERE user_id = ?) AS savedProjectCount",
+        )
+        .get(user.id, user.id)
+    : null
+  res.json({
+    user: user ? publicUser(user) : null,
+    stats,
+  })
+})
+
+app.put("/api/auth/profile", requireUser, async (req, res) => {
+  const { name, username, email, bio = "" } = req.body || {}
+  if (
+    typeof name !== "string" ||
+    typeof username !== "string" ||
+    typeof email !== "string" ||
+    typeof bio !== "string"
+  ) {
+    return res.status(400).json({ error: "Preencha os campos de perfil corretamente." })
+  }
+  const normalizedName = name.trim()
+  const normalizedUsername = username.trim().replace(/^@/, "").toLowerCase()
+  const normalizedEmail = email.trim().toLowerCase()
+  const normalizedBio = bio.trim()
+  if (
+    normalizedName.length < 2 ||
+    normalizedName.length > 100 ||
+    !/^[a-z0-9_]{3,30}$/.test(normalizedUsername) ||
+    !/^\S+@\S+\.\S+$/.test(normalizedEmail) ||
+    normalizedBio.length > 280
+  ) {
+    return res.status(400).json({
+      error: "Nome, usuário, e-mail ou biografia inválidos. A biografia aceita até 280 caracteres.",
+    })
+  }
+
+  const emailChanged = normalizedEmail !== req.user.email
+  const confirmationToken = emailChanged
+    ? crypto.randomBytes(24).toString("hex")
+    : undefined
+  try {
+    db.prepare(
+      "UPDATE users SET name = ?, username = ?, email = ?, bio = ?, email_verified = ?, confirmation_token_hash = ?, confirmation_expires_at = ? WHERE id = ?",
+    ).run(
+      normalizedName,
+      normalizedUsername,
+      normalizedEmail,
+      normalizedBio,
+      emailChanged ? 0 : 1,
+      confirmationToken ? hashToken(confirmationToken) : null,
+      confirmationToken
+        ? new Date(Date.now() + 1000 * 60 * 30).toISOString()
+        : null,
+      req.user.id,
+    )
+  } catch (error) {
+    if (String(error).includes("UNIQUE")) {
+      return res.status(409).json({ error: "E-mail ou nome de usuário já está em uso." })
+    }
+    throw error
+  }
+
+  let emailSent
+  if (confirmationToken) {
+    const link = `${appUrl}/#confirmEmail=${encodeURIComponent(confirmationToken)}`
+    try {
+      emailSent = await sendActionEmail({
+        to: normalizedEmail,
+        subject: "Confirme seu novo e-mail — dev.io",
+        text: `Confirme o novo e-mail da sua conta dev.io: ${link}\nO link expira em 30 minutos.`,
+        html: `<p><a href="${link}">Confirme seu novo e-mail no dev.io</a>. Este link expira em 30 minutos.</p>`,
+      })
+    } catch (error) {
+      logEmailFailure("confirmation", error)
+      emailSent = false
+    }
+  }
+
+  const updatedUser = db
+    .prepare("SELECT * FROM users WHERE id = ?")
+    .get(req.user.id)
+  res.json({
+    user: publicUser(updatedUser),
+    emailSent,
+    confirmationToken:
+      confirmationToken && !mailConfigured && process.env.NODE_ENV !== "production"
+        ? confirmationToken
+        : undefined,
+  })
+})
+
+app.post(
+  "/api/auth/avatar",
+  requireUser,
+  (req, res, next) => {
+    avatarUpload.single("avatar")(req, res, (error) => {
+      if (error) {
+        return res.status(400).json({ error: "A foto deve ter no máximo 2 MB." })
+      }
+      next()
+    })
+  },
+  (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "Selecione uma foto." })
+    const data = req.file.buffer
+    const formats = [
+      {
+        extension: ".jpg",
+        mime: "image/jpeg",
+        matches: data.length >= 3 && data.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])),
+      },
+      {
+        extension: ".png",
+        mime: "image/png",
+        matches: data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+      },
+      {
+        extension: ".webp",
+        mime: "image/webp",
+        matches: data.length >= 12 && data.toString("ascii", 0, 4) === "RIFF" && data.toString("ascii", 8, 12) === "WEBP",
+      },
+    ]
+    const format = formats.find((candidate) => candidate.mime === req.file.mimetype && candidate.matches)
+    if (!format) {
+      return res.status(415).json({ error: "Use uma imagem JPEG, PNG ou WebP válida." })
+    }
+
+    fs.mkdirSync(avatarDirectory, { recursive: true })
+    const avatarPath = path.join(avatarDirectory, `${req.user.id}${format.extension}`)
+    fs.writeFileSync(avatarPath, data, { mode: 0o600 })
+    db.prepare("UPDATE users SET avatar_path = ? WHERE id = ?").run(avatarPath, req.user.id)
+    const previousPath = storedAvatarPath(req.user.avatar_path)
+    if (previousPath && previousPath !== avatarPath) {
+      fs.rmSync(previousPath, { force: true })
+    }
+    res.json({ avatarUrl: `/api/auth/avatar?v=${Date.now()}` })
+  },
+)
+
+app.get("/api/auth/avatar", requireUser, (req, res) => {
+  const avatarPath = storedAvatarPath(req.user.avatar_path)
+  if (!avatarPath || !fs.existsSync(avatarPath)) {
+    return res.status(404).json({ error: "Foto de perfil não encontrada." })
+  }
+  res.setHeader("Cache-Control", "private, no-store")
+  return res.sendFile(avatarPath)
+})
+
+app.delete("/api/auth/avatar", requireUser, (req, res) => {
+  const avatarPath = storedAvatarPath(req.user.avatar_path)
+  db.prepare("UPDATE users SET avatar_path = NULL WHERE id = ?").run(req.user.id)
+  if (avatarPath) fs.rmSync(avatarPath, { force: true })
+  res.json({ ok: true })
 })
 
 app.delete("/api/auth/session", (req, res) => {
   const token = req.headers.cookie?.match(/(?:^|; )devio_session=([^;]+)/)?.[1]
-  if (token) db.prepare("DELETE FROM sessions WHERE id_hash = ?").run(hashToken(token))
+  if (token)
+    db.prepare("DELETE FROM sessions WHERE id_hash = ?").run(hashToken(token))
   res.clearCookie(sessionCookie)
   res.status(204).end()
 })
 
 app.get("/api/projects", (_req, res) => {
-  const rows = db.prepare("SELECT projects.*, users.username FROM projects LEFT JOIN users ON users.id = projects.owner_id WHERE scan_status = 'approved' ORDER BY created_at DESC").all()
+  const rows = db
+    .prepare(
+      "SELECT projects.*, users.username FROM projects LEFT JOIN users ON users.id = projects.owner_id WHERE scan_status = 'approved' ORDER BY created_at DESC",
+    )
+    .all()
   res.json({ projects: rows.map(publicProject) })
 })
 
 app.get("/api/projects/mine", requireUser, (req, res) => {
-  const rows = db.prepare("SELECT projects.*, users.username FROM projects LEFT JOIN users ON users.id = projects.owner_id WHERE projects.owner_id = ? ORDER BY created_at DESC").all(req.user.id)
+  const rows = db
+    .prepare(
+      "SELECT projects.*, users.username FROM projects LEFT JOIN users ON users.id = projects.owner_id WHERE projects.owner_id = ? ORDER BY created_at DESC",
+    )
+    .all(req.user.id)
   res.json({ projects: rows.map(publicProject) })
 })
 
 app.get("/api/projects/:id/download", (req, res) => {
-  const project = db.prepare("SELECT file_path, file_name FROM projects WHERE id = ? AND scan_status = 'approved'").get(req.params.id)
-  if (!project?.file_path || !fs.existsSync(project.file_path)) return res.status(404).json({ error: "Arquivo do projeto não encontrado." })
+  const project = db
+    .prepare(
+      "SELECT file_path, file_name FROM projects WHERE id = ? AND scan_status = 'approved'",
+    )
+    .get(req.params.id)
+  if (!project?.file_path || !fs.existsSync(project.file_path))
+    return res.status(404).json({ error: "Arquivo do projeto não encontrado." })
   return res.download(project.file_path, project.file_name || "projeto.zip")
 })
 
 app.get("/api/projects/:id/preview", (req, res) => {
-  const project = db.prepare("SELECT file_path, file_name FROM projects WHERE id = ? AND scan_status = 'approved'").get(req.params.id)
-  if (!project?.file_path || !fs.existsSync(project.file_path)) return res.status(404).json({ error: "Prévia indisponível." })
+  const project = db
+    .prepare(
+      "SELECT file_path, file_name FROM projects WHERE id = ? AND scan_status = 'approved'",
+    )
+    .get(req.params.id)
+  if (!project?.file_path || !fs.existsSync(project.file_path))
+    return res.status(404).json({ error: "Prévia indisponível." })
 
   const isZip = String(project.file_name).toLowerCase().endsWith(".zip")
   const command = isZip ? "unzip" : "tar"
-  const args = isZip ? ["-p", project.file_path, "index.html"] : ["-xOf", project.file_path, "index.html"]
+  const args = isZip
+    ? ["-p", project.file_path, "index.html"]
+    : ["-xOf", project.file_path, "index.html"]
   try {
-    const html = execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 512 * 1024 })
+    const html = execFileSync(command, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 512 * 1024,
+    })
     res.setHeader("Content-Type", "text/html; charset=utf-8")
-    res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'none'; font-src data:")
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'none'; font-src data:",
+    )
     res.setHeader("X-Content-Type-Options", "nosniff")
     return res.send(html)
   } catch {
-    return res.status(404).json({ error: "Este projeto não possui um index.html compatível para prévia." })
+    return res.status(404).json({
+      error: "Este projeto não possui um index.html compatível para prévia.",
+    })
   }
 })
 
 app.get("/api/library", requireUser, (req, res) => {
-  const rows = db.prepare(`
+  const rows = db
+    .prepare(`
     SELECT projects.*, users.username FROM library
     JOIN projects ON projects.id = library.project_id
     LEFT JOIN users ON users.id = projects.owner_id
     WHERE library.user_id = ? ORDER BY library.added_at DESC
-  `).all(req.user.id)
+  `)
+    .all(req.user.id)
   res.json({ projects: rows.map(publicProject) })
 })
 
 app.post("/api/library/:projectId", requireUser, (req, res) => {
-  const project = db.prepare("SELECT id FROM projects WHERE id = ? AND scan_status = 'approved'").get(req.params.projectId)
-  if (!project) return res.status(404).json({ error: "Projeto não encontrado." })
-  db.prepare("INSERT OR IGNORE INTO library (user_id, project_id, added_at) VALUES (?, ?, ?)").run(req.user.id, project.id, now())
+  const project = db
+    .prepare(
+      "SELECT id FROM projects WHERE id = ? AND scan_status = 'approved'",
+    )
+    .get(req.params.projectId)
+  if (!project)
+    return res.status(404).json({ error: "Projeto não encontrado." })
+  db.prepare(
+    "INSERT OR IGNORE INTO library (user_id, project_id, added_at) VALUES (?, ?, ?)",
+  ).run(req.user.id, project.id, now())
   return res.status(201).json({ ok: true })
 })
 
 app.delete("/api/library/:projectId", requireUser, (req, res) => {
-  db.prepare("DELETE FROM library WHERE user_id = ? AND project_id = ?").run(req.user.id, req.params.projectId)
+  db.prepare("DELETE FROM library WHERE user_id = ? AND project_id = ?").run(
+    req.user.id,
+    req.params.projectId,
+  )
   return res.status(204).end()
 })
 
 app.post("/api/projects", requireUser, upload.single("file"), (req, res) => {
-  if (!req.file || !req.body.name || !req.body.category || !req.body.version) return res.status(400).json({ error: "Projeto, categoria, versão e arquivo são obrigatórios." })
+  if (!req.file || !req.body.name || !req.body.category || !req.body.version)
+    return res
+      .status(400)
+      .json({ error: "Projeto, categoria, versão e arquivo são obrigatórios." })
   const scan = scanArchive(req.file)
-  if (!scan.approved) return res.status(422).json({ error: scan.reason, scanStatus: "blocked" })
+  if (!scan.approved)
+    return res.status(422).json({ error: scan.reason, scanStatus: "blocked" })
   const projectId = id()
   const safeName = `${projectId}-${path.basename(req.file.originalname).replace(/[^a-zA-Z0-9._-]/g, "_")}`
   const filePath = path.join(storageDirectory, safeName)
   fs.writeFileSync(filePath, req.file.buffer, { mode: 0o600 })
-  const checksum = crypto.createHash("sha256").update(req.file.buffer).digest("hex")
-  db.prepare(`INSERT INTO projects (id, owner_id, name, description, category, version, price, file_name, file_path, file_sha256, scan_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?)`).run(projectId, req.user.id, String(req.body.name).trim(), String(req.body.description || ""), String(req.body.category), String(req.body.version), req.body.price ? `R$ ${req.body.price}` : "Grátis", req.file.originalname, filePath, checksum, now())
-  db.prepare("INSERT INTO library (user_id, project_id, added_at) VALUES (?, ?, ?)").run(req.user.id, projectId, now())
-  res.status(201).json({ project: { ...publicProject({ ...req.body, id: projectId, username: req.user.username, price: req.body.price ? `R$ ${req.body.price}` : "Grátis", scan_status: "approved", created_at: now(), file_name: req.file.originalname, description: req.body.description || "" }), hasPreview: Boolean(scan.hasPreview) } })
+  const checksum = crypto
+    .createHash("sha256")
+    .update(req.file.buffer)
+    .digest("hex")
+  db.prepare(
+    `INSERT INTO projects (id, owner_id, name, description, category, version, price, file_name, file_path, file_sha256, scan_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?)`,
+  ).run(
+    projectId,
+    req.user.id,
+    String(req.body.name).trim(),
+    String(req.body.description || ""),
+    String(req.body.category),
+    String(req.body.version),
+    req.body.price ? `R$ ${req.body.price}` : "Grátis",
+    req.file.originalname,
+    filePath,
+    checksum,
+    now(),
+  )
+  db.prepare(
+    "INSERT INTO library (user_id, project_id, added_at) VALUES (?, ?, ?)",
+  ).run(req.user.id, projectId, now())
+  res.status(201).json({
+    project: {
+      ...publicProject({
+        ...req.body,
+        id: projectId,
+        username: req.user.username,
+        price: req.body.price ? `R$ ${req.body.price}` : "Grátis",
+        scan_status: "approved",
+        created_at: now(),
+        file_name: req.file.originalname,
+        description: req.body.description || "",
+      }),
+      hasPreview: Boolean(scan.hasPreview),
+    },
+  })
 })
 
 class ProjectController {
@@ -335,38 +1045,63 @@ class ProjectController {
   }
 
   update(req, res) {
-    const project = this.database.prepare("SELECT * FROM projects WHERE id = ? AND owner_id = ?").get(req.params.id, req.user.id)
-    if (!project) return res.status(404).json({ error: "Projeto não encontrado." })
+    const project = this.database
+      .prepare("SELECT * FROM projects WHERE id = ? AND owner_id = ?")
+      .get(req.params.id, req.user.id)
+    if (!project)
+      return res.status(404).json({ error: "Projeto não encontrado." })
 
     const { name, description, category, version, price } = req.body || {}
-    if (!name || !category || !version) return res.status(400).json({ error: "Projeto, categoria e versão são obrigatórios." })
-    this.database.prepare("UPDATE projects SET name = ?, description = ?, category = ?, version = ?, price = ? WHERE id = ? AND owner_id = ?").run(
-      String(name).trim(),
-      String(description || "").trim(),
-      String(category).trim(),
-      String(version).trim(),
-      price ? `R$ ${String(price).replace(/^R\$\s*/, "")}` : "Grátis",
-      req.params.id,
-      req.user.id,
-    )
-    const updated = this.database.prepare("SELECT projects.*, users.username FROM projects LEFT JOIN users ON users.id = projects.owner_id WHERE projects.id = ?").get(req.params.id)
+    if (!name || !category || !version)
+      return res
+        .status(400)
+        .json({ error: "Projeto, categoria e versão são obrigatórios." })
+    this.database
+      .prepare(
+        "UPDATE projects SET name = ?, description = ?, category = ?, version = ?, price = ? WHERE id = ? AND owner_id = ?",
+      )
+      .run(
+        String(name).trim(),
+        String(description || "").trim(),
+        String(category).trim(),
+        String(version).trim(),
+        price ? `R$ ${String(price).replace(/^R\$\s*/, "")}` : "Grátis",
+        req.params.id,
+        req.user.id,
+      )
+    const updated = this.database
+      .prepare(
+        "SELECT projects.*, users.username FROM projects LEFT JOIN users ON users.id = projects.owner_id WHERE projects.id = ?",
+      )
+      .get(req.params.id)
     return res.json({ project: publicProject(updated) })
   }
 
   remove(req, res) {
-    const project = this.database.prepare("SELECT file_path FROM projects WHERE id = ? AND owner_id = ?").get(req.params.id, req.user.id)
-    if (!project) return res.status(404).json({ error: "Projeto não encontrado." })
-    this.database.prepare("DELETE FROM projects WHERE id = ? AND owner_id = ?").run(req.params.id, req.user.id)
+    const project = this.database
+      .prepare("SELECT file_path FROM projects WHERE id = ? AND owner_id = ?")
+      .get(req.params.id, req.user.id)
+    if (!project)
+      return res.status(404).json({ error: "Projeto não encontrado." })
+    this.database
+      .prepare("DELETE FROM projects WHERE id = ? AND owner_id = ?")
+      .run(req.params.id, req.user.id)
     if (project.file_path) fs.rmSync(project.file_path, { force: true })
     return res.status(204).end()
   }
 }
 
 const projectController = new ProjectController(db)
-app.put("/api/projects/:id", requireUser, (req, res) => projectController.update(req, res))
-app.delete("/api/projects/:id", requireUser, (req, res) => projectController.remove(req, res))
+app.put("/api/projects/:id", requireUser, (req, res) =>
+  projectController.update(req, res),
+)
+app.delete("/api/projects/:id", requireUser, (req, res) =>
+  projectController.remove(req, res),
+)
 
 const port = Number(process.env.API_PORT || 8787)
-const server = app.listen(port, () => console.log(`dev.io API listening on http://localhost:${port}`))
+const server = app.listen(port, () =>
+  console.log(`dev.io API listening on http://localhost:${port}`),
+)
 server.ref()
 setInterval(() => {}, 60_000)

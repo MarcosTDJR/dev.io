@@ -6,6 +6,16 @@ export type ApiUser = {
   emailVerified: boolean
 }
 
+export type ProfileUser = ApiUser & {
+  bio: string
+  avatarUrl: string | null
+}
+
+export type ProfileStats = {
+  projectCount: number
+  savedProjectCount: number
+}
+
 export type ApiProject = {
   id: string
   name: string
@@ -29,27 +39,42 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     credentials: "include",
     ...init,
     headers: {
-      ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      ...(init.body instanceof FormData
+        ? {}
+        : { "Content-Type": "application/json" }),
       ...init.headers,
     },
   })
   const body = (await response.json().catch(() => ({}))) as ApiResponse<T> & T
-  if (!response.ok) throw new Error(body.error || "Não foi possível concluir a operação.")
+  if (!response.ok)
+    throw new Error(body.error || "Não foi possível concluir a operação.")
   return body as T
 }
 
-export function registerAccount(payload: { name: string; username: string; email: string; password: string }) {
-  return request<{ user: ApiUser; confirmationToken?: string }>("/api/auth/register", {
+export function registerAccount(payload: {
+  name: string
+  username: string
+  email: string
+  password: string
+}) {
+  return request<{
+    user: ApiUser
+    confirmationToken?: string
+    emailSent: boolean
+  }>("/api/auth/register", {
     method: "POST",
     body: JSON.stringify(payload),
   })
 }
 
 export function loginAccount(payload: { email: string; password: string }) {
-  return request<{ user: ApiUser }>("/api/auth/login", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
+  return request<{ user: ApiUser; passwordChangeRequired: boolean }>(
+    "/api/auth/login",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  )
 }
 
 export function loginGoogle(credential: string) {
@@ -57,6 +82,45 @@ export function loginGoogle(credential: string) {
     method: "POST",
     body: JSON.stringify({ credential }),
   })
+}
+
+export function getCurrentUser() {
+  return request<{ user: ProfileUser | null; stats: ProfileStats | null }>(
+    "/api/auth/me",
+  )
+}
+
+export function updateProfile(payload: {
+  name: string
+  username: string
+  email: string
+  bio: string
+}) {
+  return request<{
+    user: ProfileUser
+    emailSent?: boolean
+    confirmationToken?: string
+  }>("/api/auth/profile", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function uploadAvatar(file: File) {
+  const body = new FormData()
+  body.append("avatar", file)
+  return request<{ avatarUrl: string }>("/api/auth/avatar", {
+    method: "POST",
+    body,
+  })
+}
+
+export function removeAvatar() {
+  return request<{ ok: boolean }>("/api/auth/avatar", { method: "DELETE" })
+}
+
+export function logoutAccount() {
+  return request<void>("/api/auth/session", { method: "DELETE" })
 }
 
 export function downloadProject(projectId: string) {
@@ -76,16 +140,59 @@ export function confirmEmail(token: string) {
   })
 }
 
+export function resendConfirmation(email: string) {
+  return request<{
+    ok: boolean
+    confirmationToken?: string
+    emailSent: boolean
+  }>(
+    "/api/auth/resend-confirmation",
+    {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    },
+  )
+}
+
+export function requestPasswordReset(email: string) {
+  return request<{ ok: boolean; resetToken?: string; emailSent: boolean }>(
+    "/api/auth/password-reset",
+    {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    },
+  )
+}
+
+export function completePasswordReset(token: string, password: string) {
+  return request<{ ok: boolean }>("/api/auth/password-reset/complete", {
+    method: "POST",
+    body: JSON.stringify({ token, password }),
+  })
+}
+
+export function changePassword(currentPassword: string, newPassword: string) {
+  return request<{ ok: boolean }>("/api/auth/password", {
+    method: "PUT",
+    body: JSON.stringify({ currentPassword, newPassword }),
+  })
+}
+
 export function getLibrary() {
   return request<{ projects: ApiProject[] }>("/api/library")
 }
 
 export function addToLibrary(projectId: string) {
-  return request<{ ok: boolean }>(`/api/library/${encodeURIComponent(projectId)}`, { method: "POST" })
+  return request<{ ok: boolean }>(
+    `/api/library/${encodeURIComponent(projectId)}`,
+    { method: "POST" },
+  )
 }
 
 export function removeFromLibrary(projectId: string) {
-  return request<void>(`/api/library/${encodeURIComponent(projectId)}`, { method: "DELETE" })
+  return request<void>(`/api/library/${encodeURIComponent(projectId)}`, {
+    method: "DELETE",
+  })
 }
 
 export function getMyProjects() {
@@ -96,10 +203,22 @@ export function uploadProject(fields: Record<string, string>, file: File) {
   const body = new FormData()
   Object.entries(fields).forEach(([key, value]) => body.append(key, value))
   body.append("file", file)
-  return request<{ project: ApiProject }>("/api/projects", { method: "POST", body })
+  return request<{ project: ApiProject }>("/api/projects", {
+    method: "POST",
+    body,
+  })
 }
 
-export function updateProject(projectId: string, fields: { name: string; description: string; category: string; version: string; price?: string }) {
+export function updateProject(
+  projectId: string,
+  fields: {
+    name: string
+    description: string
+    category: string
+    version: string
+    price?: string
+  },
+) {
   return request<{ project: ApiProject }>(`/api/projects/${projectId}`, {
     method: "PUT",
     body: JSON.stringify(fields),

@@ -53,11 +53,34 @@ import {
   TrendingUp,
   Users,
   Archive,
+  ImagePlus,
 } from "lucide-react"
-import { addToLibrary, confirmEmail, deleteProject, downloadProject, getLibrary, getMyProjects, loginAccount, loginGoogle, registerAccount, updateProject, uploadProject } from "./lib/api"
+import {
+  addToLibrary,
+  changePassword,
+  completePasswordReset,
+  confirmEmail,
+  deleteProject,
+  downloadProject,
+  getCurrentUser,
+  getLibrary,
+  getMyProjects,
+  logoutAccount,
+  loginAccount,
+  loginGoogle,
+  removeAvatar,
+  registerAccount,
+  requestPasswordReset,
+  resendConfirmation,
+  updateProfile,
+  updateProject,
+  uploadAvatar,
+  uploadProject,
+} from "./lib/api"
+import type { ApiProject, ProfileUser } from "./lib/api"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-type Screen = "splash" | "login" | "register" | "email-confirmation" | "password-reset" | "home" | "explore" | "search" | "project-detail" | "acquire" | "acquire-success" | "donate" | "library" | "publish" | "security-check" | "security-blocked" | "my-projects" | "profile" | "settings" | "report"
+type Screen = "splash" | "login" | "register" | "email-confirmation" | "password-reset" | "password-change" | "home" | "explore" | "search" | "project-detail" | "acquire" | "acquire-success" | "donate" | "library" | "publish" | "security-check" | "security-blocked" | "my-projects" | "profile" | "profile-edit" | "settings" | "report"
 
 // ─── Shared colour tokens ─────────────────────────────────────────────────────
 const C = {
@@ -166,26 +189,41 @@ const PROJECTS = [
   },
 ]
 
-type Project = Omit<typeof PROJECTS[number], "id"> & { id: string | number; fileName?: string; downloadUrl?: string; hasPreview?: boolean }
+type Project = Omit<typeof PROJECTS[number], "id"> & {
+  id: string | number
+  fileName?: string
+  downloadUrl?: string
+  hasPreview?: boolean
+}
 
 function normalizeProject(value: Record<string, unknown>): Project {
   const fallback = PROJECTS[0]
   return {
-    id: typeof value.id === "string" || typeof value.id === "number" ? value.id : fallback.id,
+    id:
+      typeof value.id === "string" || typeof value.id === "number"
+        ? value.id
+        : fallback.id,
     name: typeof value.name === "string" ? value.name : fallback.name,
     dev: typeof value.dev === "string" ? value.dev : fallback.dev,
-    category: typeof value.category === "string" ? value.category : fallback.category,
+    category:
+      typeof value.category === "string" ? value.category : fallback.category,
     price: typeof value.price === "string" ? value.price : fallback.price,
     rating: typeof value.rating === "number" ? value.rating : 0,
     downloads: typeof value.downloads === "number" ? value.downloads : 0,
-    tech: Array.isArray(value.tech) ? value.tech.filter((item): item is string => typeof item === "string") : [],
-    version: typeof value.version === "string" ? value.version : fallback.version,
-    updated: typeof value.updated === "string" ? value.updated : fallback.updated,
+    tech: Array.isArray(value.tech)
+      ? value.tech.filter((item): item is string => typeof item === "string")
+      : [],
+    version:
+      typeof value.version === "string" ? value.version : fallback.version,
+    updated:
+      typeof value.updated === "string" ? value.updated : fallback.updated,
     verified: typeof value.verified === "boolean" ? value.verified : false,
     desc: typeof value.desc === "string" ? value.desc : fallback.desc,
     fileName: typeof value.fileName === "string" ? value.fileName : undefined,
-    downloadUrl: typeof value.downloadUrl === "string" ? value.downloadUrl : undefined,
-    hasPreview: typeof value.hasPreview === "boolean" ? value.hasPreview : false,
+    downloadUrl:
+      typeof value.downloadUrl === "string" ? value.downloadUrl : undefined,
+    hasPreview:
+      typeof value.hasPreview === "boolean" ? value.hasPreview : false,
   }
 }
 
@@ -347,7 +385,13 @@ function StarRating({ rating }: { rating: number }) {
   )
 }
 
-function Badge({ label, color = C.primary }: { label: string; color?: string }) {
+function Badge({
+  label,
+  color = C.primary,
+}: {
+  label: string
+  color?: string
+}) {
   return (
     <span
       style={{
@@ -741,13 +785,22 @@ function LoginScreen({ navigate }: { navigate: (s: Screen) => void }) {
             await loginGoogle(credential)
             navigate("home")
           } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "Não foi possível entrar com Google.")
+            setError(
+              reason instanceof Error
+                ? reason.message
+                : "Não foi possível entrar com Google.",
+            )
           } finally {
             setLoading(false)
           }
         },
       })
-      window.google.accounts.id.renderButton(googleButtonRef.current, { theme: "filled_black", size: "large", text: "signin_with", width: 360 })
+      window.google.accounts.id.renderButton(googleButtonRef.current, {
+        theme: "filled_black",
+        size: "large",
+        text: "signin_with",
+        width: 360,
+      })
     }
     if (window.google) {
       renderGoogleButton()
@@ -768,10 +821,12 @@ function LoginScreen({ navigate }: { navigate: (s: Screen) => void }) {
     setLoading(true)
     setError("")
     try {
-      await loginAccount({ email, password })
-      navigate("home")
+      const response = await loginAccount({ email, password })
+      navigate(response.passwordChangeRequired ? "password-change" : "home")
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Não foi possível entrar.")
+      setError(
+        error instanceof Error ? error.message : "Não foi possível entrar.",
+      )
     } finally {
       setLoading(false)
     }
@@ -877,11 +932,29 @@ function LoginScreen({ navigate }: { navigate: (s: Screen) => void }) {
         </div>
 
         {googleClientId ? (
-          <div ref={googleButtonRef} style={{ minHeight: 42, display: "flex", justifyContent: "center" }} />
+          <div
+            ref={googleButtonRef}
+            style={{ minHeight: 42, display: "flex", justifyContent: "center" }}
+          />
         ) : (
           <button
-            onClick={() => setError("Login Google indisponível: configure VITE_GOOGLE_CLIENT_ID e GOOGLE_CLIENT_ID.")}
-            style={{ width: "100%", padding: "12px 20px", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 12, cursor: "pointer", color: C.text, fontSize: 14, fontWeight: 500, fontFamily: "Inter, sans-serif" }}
+            onClick={() =>
+              setError(
+                "Login Google indisponível: configure VITE_GOOGLE_CLIENT_ID e GOOGLE_CLIENT_ID.",
+              )
+            }
+            style={{
+              width: "100%",
+              padding: "12px 20px",
+              background: C.surface2,
+              border: `1px solid ${C.border}`,
+              borderRadius: 12,
+              cursor: "pointer",
+              color: C.text,
+              fontSize: 14,
+              fontWeight: 500,
+              fontFamily: "Inter, sans-serif",
+            }}
           >
             Entrar com Google
           </button>
@@ -926,18 +999,43 @@ function RegisterScreen({ navigate }: { navigate: (s: Screen) => void }) {
   const set = (k: keyof typeof form) => (v: string) =>
     setForm((f) => ({ ...f, [k]: v }))
   const register = async () => {
-    if (!terms || !form.name || !form.username || !form.email || form.password.length < 8 || form.password !== form.confirm) {
-      setError("Preencha os campos, aceite os termos e confirme uma senha com pelo menos 8 caracteres.")
+    if (
+      !terms ||
+      !form.name ||
+      !form.username ||
+      !form.email ||
+      form.password.length < 8 ||
+      form.password !== form.confirm
+    ) {
+      setError(
+        "Preencha os campos, aceite os termos e confirme uma senha com pelo menos 8 caracteres.",
+      )
       return
     }
     setLoading(true)
     setError("")
     try {
       const response = await registerAccount(form)
-      if (response.confirmationToken) sessionStorage.setItem("devio_confirmation_token", response.confirmationToken)
+      if (response.confirmationToken)
+        sessionStorage.setItem(
+          "devio_confirmation_token",
+          response.confirmationToken,
+        )
+      sessionStorage.setItem(
+        "devio_pending_email",
+        form.email.trim().toLowerCase(),
+      )
+      sessionStorage.setItem(
+        "devio_confirmation_email_sent",
+        String(response.emailSent),
+      )
       navigate("email-confirmation")
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Não foi possível criar a conta.")
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível criar a conta.",
+      )
     } finally {
       setLoading(false)
     }
@@ -954,23 +1052,27 @@ function RegisterScreen({ navigate }: { navigate: (s: Screen) => void }) {
     >
       <Header title="Criar conta" onBack={() => navigate("login")} />
       <div style={{ padding: "24px 28px 32px" }}>
-        {error && <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>{error}</div>}
+        {error && (
+          <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
         <Input
           label="Nome completo"
-          placeholder="Marcos Dutra"
+          placeholder="Joselino Alves Ambique"
           value={form.name}
           onChange={set("name")}
         />
         <Input
           label="Nome de usuário"
-          placeholder="@marcos_dev"
+          placeholder="@juce_dev"
           value={form.username}
           onChange={set("username")}
         />
         <Input
           label="E-mail"
           type="email"
-          placeholder="marcos@email.com"
+          placeholder="juceleno@email.com"
           value={form.email}
           onChange={set("email")}
         />
@@ -1072,18 +1174,73 @@ function EmailConfirmationScreen({
 }) {
   const [error, setError] = useState("")
   const [confirmed, setConfirmed] = useState(false)
+  const [resending, setResending] = useState(false)
+  const [resent, setResent] = useState(false)
+  const [deliveryReady, setDeliveryReady] = useState(
+    () => sessionStorage.getItem("devio_confirmation_email_sent") !== "false",
+  )
+  const [token, setToken] = useState(
+    () =>
+      new URLSearchParams(window.location.hash.slice(1)).get("confirmEmail") ||
+      sessionStorage.getItem("devio_confirmation_token") ||
+      "",
+  )
   const confirm = async () => {
-    const token = sessionStorage.getItem("devio_confirmation_token")
     if (!token) {
-      setError("O link precisa ser aberto a partir do e-mail de confirmação.")
+      setError("Abra o link recebido por e-mail ou solicite um novo.")
       return
     }
     try {
       await confirmEmail(token)
       sessionStorage.removeItem("devio_confirmation_token")
+      sessionStorage.removeItem("devio_pending_email")
+      sessionStorage.removeItem("devio_confirmation_email_sent")
+      window.history.replaceState(null, "", window.location.pathname)
       setConfirmed(true)
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Não foi possível confirmar o e-mail.")
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível confirmar o e-mail.",
+      )
+    }
+  }
+  const resend = async () => {
+    const email = sessionStorage.getItem("devio_pending_email")
+    if (!email) {
+      setError("Volte ao cadastro e informe o e-mail da sua conta.")
+      return
+    }
+    setResending(true)
+    setError("")
+    try {
+      const response = await resendConfirmation(email)
+      if (response.confirmationToken) {
+        sessionStorage.setItem(
+          "devio_confirmation_token",
+          response.confirmationToken,
+        )
+        setToken(response.confirmationToken)
+      }
+      setDeliveryReady(response.emailSent)
+      sessionStorage.setItem(
+        "devio_confirmation_email_sent",
+        String(response.emailSent),
+      )
+      setResent(response.emailSent || Boolean(response.confirmationToken))
+      if (!response.emailSent && !response.confirmationToken) {
+        setError(
+          "Não foi possível enviar o e-mail. Verifique a configuração SMTP do servidor.",
+        )
+      }
+    } catch (error) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível reenviar o e-mail.",
+      )
+    } finally {
+      setResending(false)
     }
   }
   return (
@@ -1130,17 +1287,31 @@ function EmailConfirmationScreen({
             marginBottom: 28,
           }}
         >
-          Enviamos um link de confirmação para ativar sua conta. O link expira
-          em 30 minutos.
+          {deliveryReady
+            ? "Enviamos um link de confirmação para ativar sua conta. O link expira em 30 minutos."
+            : token
+              ? "Ambiente de desenvolvimento sem SMTP: use o botão abaixo para confirmar a conta. O token expira em 30 minutos."
+              : "O e-mail de confirmação não foi enviado. Verifique a configuração SMTP do servidor ou tente reenviar."}
         </div>
-        {error && <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>{error}</div>}
+        {error && (
+          <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
         <Btn
-          label={confirmed ? "Continuar para o login" : "Confirmar e-mail"}
+          label={
+            confirmed
+              ? "Continuar para o login"
+              : token
+                ? "Confirmar e-mail"
+                : "Já confirmei meu e-mail"
+          }
           onClick={() => (confirmed ? navigate("login") : confirm())}
           full
         />
         <button
-          onClick={() => {}}
+          onClick={resend}
+          disabled={resending}
           style={{
             background: "none",
             border: "none",
@@ -1151,7 +1322,13 @@ function EmailConfirmationScreen({
             fontFamily: "Inter, sans-serif",
           }}
         >
-          Reenviar e-mail
+          {resending
+            ? "Enviando..."
+            : resent
+              ? deliveryReady
+                ? "E-mail reenviado"
+                : "Token de teste renovado"
+              : "Reenviar e-mail"}
         </button>
       </div>
     </div>
@@ -1160,12 +1337,118 @@ function EmailConfirmationScreen({
 
 function PasswordResetScreen({ navigate }: { navigate: (s: Screen) => void }) {
   const [email, setEmail] = useState("")
-  const [sent, setSent] = useState(false)
+  const [requestSent, setRequestSent] = useState(false)
+  const [resetDone, setResetDone] = useState(false)
+  const [token, setToken] = useState(
+    () =>
+      new URLSearchParams(window.location.hash.slice(1)).get("resetPassword") ||
+      sessionStorage.getItem("devio_reset_token") ||
+      "",
+  )
+  const [password, setPassword] = useState("")
+  const [confirm, setConfirm] = useState("")
+  const [error, setError] = useState("")
+  const [loading, setLoading] = useState(false)
+  const requestReset = async () => {
+    if (!email.trim()) {
+      setError("Informe seu e-mail.")
+      return
+    }
+    setLoading(true)
+    setError("")
+    try {
+      const response = await requestPasswordReset(email)
+      if (response.resetToken) {
+        sessionStorage.setItem("devio_reset_token", response.resetToken)
+        setToken(response.resetToken)
+      }
+      setRequestSent(true)
+    } catch (error) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível solicitar a redefinição.",
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+  const resetPassword = async () => {
+    if (password.length < 8 || password !== confirm) {
+      setError(
+        "Informe uma senha com pelo menos 8 caracteres e confirme-a corretamente.",
+      )
+      return
+    }
+    setLoading(true)
+    setError("")
+    try {
+      await completePasswordReset(token, password)
+      sessionStorage.removeItem("devio_reset_token")
+      window.history.replaceState(null, "", window.location.pathname)
+      setToken("")
+      setResetDone(true)
+    } catch (error) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível redefinir a senha.",
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
   return (
-    <div style={{ width: "100%", height: "100%", background: C.bg }}>
+    <div
+      className="phone-scroll"
+      style={{
+        width: "100%",
+        height: "100%",
+        background: C.bg,
+        overflowY: "auto",
+      }}
+    >
       <Header title="Recuperar senha" onBack={() => navigate("login")} />
       <div style={{ padding: "28px 28px" }}>
-        {sent ? (
+        {token ? (
+          <>
+            <div
+              style={{
+                fontSize: 14,
+                color: C.text2,
+                lineHeight: 1.6,
+                marginBottom: 24,
+              }}
+            >
+              Escolha uma nova senha. O link de recuperação pode ser usado uma
+              única vez.
+            </div>
+            {error && (
+              <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>
+                {error}
+              </div>
+            )}
+            <Input
+              label="Nova senha"
+              type="password"
+              placeholder="Mínimo 8 caracteres"
+              value={password}
+              onChange={setPassword}
+            />
+            <Input
+              label="Confirmar nova senha"
+              type="password"
+              placeholder="Repita a nova senha"
+              value={confirm}
+              onChange={setConfirm}
+            />
+            <Btn
+              label={loading ? "Salvando..." : "Redefinir senha"}
+              onClick={resetPassword}
+              full
+            />
+          </>
+        ) : resetDone ? (
           <div style={{ textAlign: "center", paddingTop: 32 }}>
             <CheckCircle
               size={48}
@@ -1180,7 +1463,40 @@ function PasswordResetScreen({ navigate }: { navigate: (s: Screen) => void }) {
                 marginBottom: 10,
               }}
             >
-              Link enviado
+              Senha atualizada
+            </div>
+            <div
+              style={{
+                fontSize: 13,
+                color: C.text2,
+                lineHeight: 1.6,
+                marginBottom: 28,
+              }}
+            >
+              Sua senha foi alterada. Entre novamente com a nova senha.
+            </div>
+            <Btn
+              label="Voltar para o login"
+              onClick={() => navigate("login")}
+              full
+            />
+          </div>
+        ) : requestSent ? (
+          <div style={{ textAlign: "center", paddingTop: 32 }}>
+            <CheckCircle
+              size={48}
+              color={C.success}
+              style={{ marginBottom: 16 }}
+            />
+            <div
+              style={{
+                fontSize: 20,
+                fontWeight: 700,
+                color: C.text,
+                marginBottom: 10,
+              }}
+            >
+              Verifique seu e-mail
             </div>
             <div
               style={{
@@ -1212,6 +1528,11 @@ function PasswordResetScreen({ navigate }: { navigate: (s: Screen) => void }) {
               Informe o e-mail da sua conta. Nunca compartilhamos se o endereço
               está cadastrado.
             </div>
+            {error && (
+              <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>
+                {error}
+              </div>
+            )}
             <Input
               label="E-mail"
               type="email"
@@ -1220,8 +1541,105 @@ function PasswordResetScreen({ navigate }: { navigate: (s: Screen) => void }) {
               onChange={setEmail}
             />
             <Btn
-              label="Enviar link de recuperação"
-              onClick={() => setSent(Boolean(email))}
+              label={loading ? "Enviando..." : "Enviar link de recuperação"}
+              onClick={requestReset}
+              full
+            />
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function PasswordChangeScreen({ navigate }: { navigate: (s: Screen) => void }) {
+  const [currentPassword, setCurrentPassword] = useState("")
+  const [newPassword, setNewPassword] = useState("")
+  const [confirm, setConfirm] = useState("")
+  const [error, setError] = useState("")
+  const [loading, setLoading] = useState(false)
+  const [changed, setChanged] = useState(false)
+  const submit = async () => {
+    if (newPassword.length < 8 || newPassword !== confirm) {
+      setError(
+        "A nova senha deve ter pelo menos 8 caracteres e as confirmações devem coincidir.",
+      )
+      return
+    }
+    setLoading(true)
+    setError("")
+    try {
+      await changePassword(currentPassword, newPassword)
+      setChanged(true)
+    } catch (error) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível alterar a senha.",
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+  return (
+    <div
+      className="phone-scroll"
+      style={{
+        width: "100%",
+        height: "100%",
+        background: C.bg,
+        overflowY: "auto",
+      }}
+    >
+      <Header title="Alterar senha" onBack={() => navigate("settings")} />
+      <div style={{ padding: "28px 28px" }}>
+        {changed ? (
+          <>
+            <div style={{ color: C.success, fontSize: 15, marginBottom: 20 }}>
+              Senha alterada com sucesso.
+            </div>
+            <Btn label="Continuar" onClick={() => navigate("settings")} full />
+          </>
+        ) : (
+          <>
+            <div
+              style={{
+                fontSize: 13,
+                color: C.text2,
+                lineHeight: 1.6,
+                marginBottom: 24,
+              }}
+            >
+              Atualize sua senha periodicamente e sempre que suspeitar que ela
+              foi comprometida.
+            </div>
+            {error && (
+              <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>
+                {error}
+              </div>
+            )}
+            <Input
+              label="Senha atual"
+              type="password"
+              value={currentPassword}
+              onChange={setCurrentPassword}
+            />
+            <Input
+              label="Nova senha"
+              type="password"
+              placeholder="Mínimo 8 caracteres"
+              value={newPassword}
+              onChange={setNewPassword}
+            />
+            <Input
+              label="Confirmar nova senha"
+              type="password"
+              value={confirm}
+              onChange={setConfirm}
+            />
+            <Btn
+              label={loading ? "Salvando..." : "Alterar senha"}
+              onClick={submit}
               full
             />
           </>
@@ -2056,9 +2474,17 @@ function ProjectDetailScreen({
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Btn
             label={
-              project.fileName ? "Baixar projeto" : project.price === "Grátis" ? "Baixar projeto" : `Adquirir — ${project.price}`
+              project.fileName
+                ? "Baixar projeto"
+                : project.price === "Grátis"
+                  ? "Baixar projeto"
+                  : `Adquirir — ${project.price}`
             }
-            onClick={() => project.fileName ? downloadProject(String(project.id)) : navigate("acquire", project)}
+            onClick={() =>
+              project.fileName
+                ? downloadProject(String(project.id))
+                : navigate("acquire", project)
+            }
             full
           />
           <div style={{ display: "flex", gap: 10 }}>
@@ -2129,7 +2555,11 @@ function AcquireScreen({
       if (project.fileName) downloadProject(String(project.id))
       navigate("acquire-success", project)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Não foi possível adicionar o projeto.")
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível adicionar o projeto.",
+      )
     } finally {
       setLoading(false)
     }
@@ -2150,7 +2580,11 @@ function AcquireScreen({
         onBack={() => navigate("project-detail", project)}
       />
       <div style={{ padding: "24px 20px" }}>
-        {error && <div style={{ color: C.danger, fontSize: 13, marginBottom: 16 }}>{error}</div>}
+        {error && (
+          <div style={{ color: C.danger, fontSize: 13, marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
         {/* Project info */}
         <div
           style={{
@@ -2574,8 +3008,20 @@ function LibraryScreen({
   const tabs = ["Todos", "Instalados", "Favoritos", "Atualizações"]
   useEffect(() => {
     getLibrary()
-      .then((response) => setMyProjects(response.projects.map((project) => normalizeProject(project as unknown as Record<string, unknown>))))
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Não foi possível carregar a biblioteca."))
+      .then((response) =>
+        setMyProjects(
+          response.projects.map((project) =>
+            normalizeProject(project as unknown as Record<string, unknown>),
+          ),
+        ),
+      )
+      .catch((reason) =>
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Não foi possível carregar a biblioteca.",
+        ),
+      )
       .finally(() => setLoading(false))
   }, [])
   return (
@@ -2630,9 +3076,17 @@ function LibraryScreen({
           gap: 12,
         }}
       >
-        {loading && <div style={{ color: C.text2, fontSize: 13 }}>Carregando sua biblioteca...</div>}
+        {loading && (
+          <div style={{ color: C.text2, fontSize: 13 }}>
+            Carregando sua biblioteca...
+          </div>
+        )}
         {error && <div style={{ color: C.danger, fontSize: 13 }}>{error}</div>}
-        {!loading && !error && myProjects.length === 0 && <div style={{ color: C.text2, fontSize: 13 }}>Sua biblioteca ainda está vazia.</div>}
+        {!loading && !error && myProjects.length === 0 && (
+          <div style={{ color: C.text2, fontSize: 13 }}>
+            Sua biblioteca ainda está vazia.
+          </div>
+        )}
         {myProjects.map((p) => (
           <div
             key={p.id}
@@ -2711,7 +3165,11 @@ function LibraryScreen({
 }
 
 // ─── SCREEN: Publish ──────────────────────────────────────────────────────────
-function PublishScreen({ navigate }: { navigate: (s: Screen, data?: unknown) => void }) {
+function PublishScreen({
+  navigate,
+}: {
+  navigate: (s: Screen, data?: unknown) => void
+}) {
   const [form, setForm] = useState({
     name: "",
     desc: "",
@@ -2728,16 +3186,31 @@ function PublishScreen({ navigate }: { navigate: (s: Screen, data?: unknown) => 
     setForm((f) => ({ ...f, [k]: v }))
   const publish = async () => {
     if (!form.name || !form.category || !form.version || !file) {
-      setError("Informe nome, categoria, versão e selecione um arquivo .zip ou .tar.gz.")
+      setError(
+        "Informe nome, categoria, versão e selecione um arquivo .zip ou .tar.gz.",
+      )
       return
     }
     setUploading(true)
     setError("")
     try {
-      const response = await uploadProject({ name: form.name, description: form.desc, category: form.category, version: form.version, price: form.price }, file)
+      const response = await uploadProject(
+        {
+          name: form.name,
+          description: form.desc,
+          category: form.category,
+          version: form.version,
+          price: form.price,
+        },
+        file,
+      )
       navigate("security-check", response.project)
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Não foi possível publicar o projeto.")
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível publicar o projeto.",
+      )
     } finally {
       setUploading(false)
     }
@@ -2755,7 +3228,11 @@ function PublishScreen({ navigate }: { navigate: (s: Screen, data?: unknown) => 
     >
       <Header title="Publicar projeto" />
       <div style={{ padding: "16px 20px" }}>
-        {error && <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>{error}</div>}
+        {error && (
+          <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
         {/* Info banner */}
         <div
           onClick={() => fileInputRef.current?.click()}
@@ -2880,7 +3357,13 @@ function PublishScreen({ navigate }: { navigate: (s: Screen, data?: unknown) => 
           }}
           onClick={() => fileInputRef.current?.click()}
         >
-          <input ref={fileInputRef} type="file" accept=".zip,.tar.gz,.tgz" hidden onChange={(event) => setFile(event.target.files?.[0] || null)} />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".zip,.tar.gz,.tgz"
+            hidden
+            onChange={(event) => setFile(event.target.files?.[0] || null)}
+          />
           <Upload size={28} color={C.text3} style={{ marginBottom: 8 }} />
           <div style={{ fontSize: 13, color: C.text2 }}>
             {file ? file.name : "Clique para enviar arquivo"}
@@ -3086,10 +3569,25 @@ function SecurityCheckScreen({
           <div style={{ marginTop: 28 }}>
             {!blocked && project?.hasPreview && (
               <div style={{ marginBottom: 20 }}>
-                <div style={{ color: C.text, fontSize: 13, fontWeight: 700, marginBottom: 8 }}>
+                <div
+                  style={{
+                    color: C.text,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    marginBottom: 8,
+                  }}
+                >
                   Prévia isolada
                 </div>
-                <div style={{ height: 220, overflow: "hidden", borderRadius: 12, border: `1px solid ${C.border}`, background: "white" }}>
+                <div
+                  style={{
+                    height: 220,
+                    overflow: "hidden",
+                    borderRadius: 12,
+                    border: `1px solid ${C.border}`,
+                    background: "white",
+                  }}
+                >
                   <iframe
                     title={`Prévia de ${project.name}`}
                     src={`/api/projects/${encodeURIComponent(String(project.id))}/preview`}
@@ -3156,36 +3654,82 @@ function MyProjectsScreen({
   const tabs = ["Publicados", "Em análise", "Bloqueados", "Rascunhos"]
   const [projects, setProjects] = useState<Project[]>([])
   const [editing, setEditing] = useState<Project | null>(null)
-  const [editForm, setEditForm] = useState({ name: "", description: "", category: "", version: "", price: "" })
+  const [editForm, setEditForm] = useState({
+    name: "",
+    description: "",
+    category: "",
+    version: "",
+    price: "",
+  })
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(true)
   useEffect(() => {
     getMyProjects()
-      .then((response) => setProjects(response.projects.map((project) => normalizeProject(project as unknown as Record<string, unknown>))))
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Não foi possível carregar seus projetos."))
+      .then((response) =>
+        setProjects(
+          response.projects.map((project) =>
+            normalizeProject(project as unknown as Record<string, unknown>),
+          ),
+        ),
+      )
+      .catch((reason) =>
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Não foi possível carregar seus projetos.",
+        ),
+      )
       .finally(() => setLoading(false))
   }, [])
   const startEditing = (project: Project) => {
     setEditing(project)
-    setEditForm({ name: project.name, description: project.desc, category: project.category, version: project.version, price: project.price === "Grátis" ? "" : project.price.replace(/^R\$\s*/, "") })
+    setEditForm({
+      name: project.name,
+      description: project.desc,
+      category: project.category,
+      version: project.version,
+      price:
+        project.price === "Grátis" ? "" : project.price.replace(/^R\$\s*/, ""),
+    })
   }
   const saveEditing = async () => {
     if (!editing) return
     try {
       const response = await updateProject(String(editing.id), editForm)
-      setProjects((current) => current.map((project) => project.id === editing.id ? normalizeProject(response.project as unknown as Record<string, unknown>) : project))
+      setProjects((current) =>
+        current.map((project) =>
+          project.id === editing.id
+            ? normalizeProject(
+                response.project as unknown as Record<string, unknown>,
+              )
+            : project,
+        ),
+      )
       setEditing(null)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Não foi possível atualizar o projeto.")
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível atualizar o projeto.",
+      )
     }
   }
   const removeProject = async (project: Project) => {
-    if (!window.confirm(`Excluir \"${project.name}\"? Esta ação remove também o arquivo enviado.`)) return
+    if (
+      !window.confirm(
+        `Excluir \"${project.name}\"? Esta ação remove também o arquivo enviado.`,
+      )
+    )
+      return
     try {
       await deleteProject(String(project.id))
       setProjects((current) => current.filter((item) => item.id !== project.id))
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Não foi possível excluir o projeto.")
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível excluir o projeto.",
+      )
     }
   }
   return (
@@ -3307,20 +3851,74 @@ function MyProjectsScreen({
         }}
       >
         {error && <div style={{ color: C.danger, fontSize: 13 }}>{error}</div>}
-        {loading && <div style={{ color: C.text2, fontSize: 13 }}>Carregando projetos...</div>}
+        {loading && (
+          <div style={{ color: C.text2, fontSize: 13 }}>
+            Carregando projetos...
+          </div>
+        )}
         {editing && (
-          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16 }}>
-            <div style={{ color: C.text, fontWeight: 700, marginBottom: 12 }}>Editar projeto</div>
-            <Input label="Nome" value={editForm.name} onChange={(value) => setEditForm((current) => ({ ...current, name: value }))} />
-            <Input label="Descrição" value={editForm.description} onChange={(value) => setEditForm((current) => ({ ...current, description: value }))} />
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-              <Input label="Categoria" value={editForm.category} onChange={(value) => setEditForm((current) => ({ ...current, category: value }))} />
-              <Input label="Versão" value={editForm.version} onChange={(value) => setEditForm((current) => ({ ...current, version: value }))} />
-              <Input label="Preço" value={editForm.price} onChange={(value) => setEditForm((current) => ({ ...current, price: value }))} />
+          <div
+            style={{
+              background: C.surface,
+              border: `1px solid ${C.border}`,
+              borderRadius: 16,
+              padding: 16,
+            }}
+          >
+            <div style={{ color: C.text, fontWeight: 700, marginBottom: 12 }}>
+              Editar projeto
+            </div>
+            <Input
+              label="Nome"
+              value={editForm.name}
+              onChange={(value) =>
+                setEditForm((current) => ({ ...current, name: value }))
+              }
+            />
+            <Input
+              label="Descrição"
+              value={editForm.description}
+              onChange={(value) =>
+                setEditForm((current) => ({ ...current, description: value }))
+              }
+            />
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 10,
+              }}
+            >
+              <Input
+                label="Categoria"
+                value={editForm.category}
+                onChange={(value) =>
+                  setEditForm((current) => ({ ...current, category: value }))
+                }
+              />
+              <Input
+                label="Versão"
+                value={editForm.version}
+                onChange={(value) =>
+                  setEditForm((current) => ({ ...current, version: value }))
+                }
+              />
+              <Input
+                label="Preço"
+                value={editForm.price}
+                onChange={(value) =>
+                  setEditForm((current) => ({ ...current, price: value }))
+                }
+              />
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <Btn label="Salvar alterações" onClick={saveEditing} small />
-              <Btn label="Cancelar" onClick={() => setEditing(null)} variant="secondary" small />
+              <Btn
+                label="Cancelar"
+                onClick={() => setEditing(null)}
+                variant="secondary"
+                small
+              />
             </div>
           </div>
         )}
@@ -3422,9 +4020,25 @@ function MyProjectsScreen({
               ))}
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <Btn label="Editar" onClick={() => startEditing(p)} variant="secondary" small />
-              {p.fileName && <Btn label="Baixar" onClick={() => downloadProject(String(p.id))} small />}
-              <Btn label="Excluir" onClick={() => removeProject(p)} variant="danger" small />
+              <Btn
+                label="Editar"
+                onClick={() => startEditing(p)}
+                variant="secondary"
+                small
+              />
+              {p.fileName && (
+                <Btn
+                  label="Baixar"
+                  onClick={() => downloadProject(String(p.id))}
+                  small
+                />
+              )}
+              <Btn
+                label="Excluir"
+                onClick={() => removeProject(p)}
+                variant="danger"
+                small
+              />
             </div>
           </div>
         ))}
@@ -3435,6 +4049,54 @@ function MyProjectsScreen({
 
 // ─── SCREEN: Profile ──────────────────────────────────────────────────────────
 function ProfileScreen({ navigate }: { navigate: (s: Screen) => void }) {
+  const [profile, setProfile] = useState<ProfileUser | null>(null)
+  const [savedProjects, setSavedProjects] = useState<ApiProject[]>([])
+  const [stats, setStats] = useState<{
+    projectCount: number
+    savedProjectCount: number
+  } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    let active = true
+    getCurrentUser()
+      .then(async (response) => {
+        if (!active) return
+        setProfile(response.user)
+        setStats(response.stats)
+        if (response.user) {
+          try {
+            const library = await getLibrary()
+            if (active) setSavedProjects(library.projects)
+          } catch (reason) {
+            if (active) {
+              setError(
+                reason instanceof Error
+                  ? reason.message
+                  : "Não foi possível carregar sua biblioteca.",
+              )
+            }
+          }
+        }
+      })
+      .catch((reason) => {
+        if (active) {
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "Não foi possível carregar seu perfil.",
+          )
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
   return (
     <div
       className="phone-scroll"
@@ -3446,147 +4108,248 @@ function ProfileScreen({ navigate }: { navigate: (s: Screen) => void }) {
         paddingBottom: 80,
       }}
     >
-      <div
-        style={{
-          padding: "20px 20px 0",
-          display: "flex",
-          justifyContent: "flex-end",
-        }}
-      >
-        <button
-          onClick={() => navigate("settings")}
-          style={{ background: "none", border: "none", cursor: "pointer" }}
-        >
-          <Settings size={22} color={C.text2} />
-        </button>
-      </div>
-
-      {/* Avatar */}
-      <div style={{ padding: "16px 20px 24px", textAlign: "center" }}>
-        <div
-          style={{
-            width: 80,
-            height: 80,
-            borderRadius: "50%",
-            margin: "0 auto 12px",
-            background: `linear-gradient(135deg, ${C.primary}, ${C.accent})`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 30,
-            fontWeight: 800,
-            color: "white",
-            border: `3px solid ${C.border}`,
-          }}
-        >
-          M
+      <Header title="Meu perfil" right={profile ? <button
+        onClick={() => navigate("settings")}
+        aria-label="Configurações"
+        style={{ background: "none", border: "none", cursor: "pointer" }}
+      ><Settings size={22} color={C.text2} /></button> : undefined} />
+      {loading ? (
+        <div style={{ padding: 32, textAlign: "center", color: C.text2 }}>Carregando perfil...</div>
+      ) : !profile ? (
+        <div style={{ padding: "48px 28px", textAlign: "center" }}>
+          {error && <div style={{ color: C.danger, fontSize: 13, marginBottom: 16 }}>{error}</div>}
+          <div style={{ color: C.text2, marginBottom: 20 }}>Entre na sua conta para acessar seu perfil.</div>
+          <Btn label="Entrar" onClick={() => navigate("login")} full />
         </div>
-        <div style={{ fontSize: 18, fontWeight: 700, color: C.text }}>
-          Marcos T. D. Júnior
-        </div>
-        <div style={{ fontSize: 13, color: C.primary }}>@marcos_dev</div>
-        <div
-          style={{
-            fontSize: 13,
-            color: C.text2,
-            marginTop: 8,
-            lineHeight: 1.5,
-          }}
-        >
-          Desenvolvedor Full Stack. Apaixonado por open source e inovação.
-        </div>
-
-        {/* Stats */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "center",
-            gap: 32,
-            marginTop: 20,
-          }}
-        >
-          {[
-            { label: "Projetos", value: "6" },
-            { label: "Seguidores", value: "248" },
-            { label: "Seguindo", value: "91" },
-          ].map((s) => (
-            <div key={s.label} style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>
-                {s.value}
-              </div>
-              <div style={{ fontSize: 11, color: C.text3 }}>{s.label}</div>
+      ) : (
+        <>
+          <div style={{ padding: "24px 20px", textAlign: "center" }}>
+            <div style={{
+              width: 96,
+              height: 96,
+              borderRadius: "50%",
+              margin: "0 auto 12px",
+              overflow: "hidden",
+              background: `linear-gradient(135deg, ${C.primary}, ${C.accent})`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 30,
+              fontWeight: 800,
+              color: "white",
+              border: `3px solid ${C.border}`,
+            }}>
+              {profile.avatarUrl
+                ? <img src={profile.avatarUrl} alt={`Foto de ${profile.name}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                : profile.name.trim().charAt(0).toUpperCase()}
             </div>
-          ))}
-        </div>
-
-        <div
-          style={{
-            display: "flex",
-            gap: 10,
-            justifyContent: "center",
-            marginTop: 20,
-          }}
-        >
-          <Btn label="Editar perfil" variant="secondary" small />
-          <Btn
-            label="Meus projetos"
-            onClick={() => navigate("my-projects")}
-            small
-          />
-        </div>
-      </div>
-
-      <div style={{ height: 1, background: C.border, margin: "0 20px" }} />
-
-      {/* Acquired */}
-      <div style={{ padding: "20px 20px 8px" }}>
-        <div
-          style={{
-            fontSize: 14,
-            fontWeight: 700,
-            color: C.text,
-            marginBottom: 14,
-          }}
-        >
-          Projetos adquiridos
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {PROJECTS.slice(0, 3).map((p) => (
-            <div
-              key={p.id}
-              style={{ display: "flex", gap: 10, alignItems: "center" }}
-            >
-              <div
-                style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 10,
-                  background: `linear-gradient(135deg, ${C.primary}44, ${C.accent}44)`,
+            <div style={{ fontSize: 18, fontWeight: 700, color: C.text }}>{profile.name}</div>
+            <div style={{ fontSize: 13, color: C.primary }}>@{profile.username}</div>
+            <div style={{ fontSize: 12, color: C.text3, marginTop: 4 }}>{profile.email}</div>
+            <div style={{ fontSize: 11, color: profile.emailVerified ? C.success : C.warning, marginTop: 4 }}>
+              {profile.emailVerified ? "E-mail confirmado" : "E-mail aguardando confirmação"}
+            </div>
+            <div style={{ fontSize: 13, color: C.text2, marginTop: 10, lineHeight: 1.5 }}>
+              {profile.bio || "Adicione uma biografia para contar sobre você."}
+            </div>
+            {error && <div style={{ color: C.danger, fontSize: 12, marginTop: 12 }}>{error}</div>}
+            <div style={{ display: "flex", justifyContent: "center", gap: 24, marginTop: 20 }}>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>{stats?.projectCount ?? 0}</div>
+                <div style={{ fontSize: 11, color: C.text3 }}>Projetos</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>{stats?.savedProjectCount ?? 0}</div>
+                <div style={{ fontSize: 11, color: C.text3 }}>Na biblioteca</div>
+              </div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "center", gap: 10, marginTop: 20 }}>
+              <Btn label="Editar perfil" onClick={() => navigate("profile-edit")} variant="secondary" small />
+              <Btn label="Meus projetos" onClick={() => navigate("my-projects")} small />
+            </div>
+          </div>
+          <div style={{ height: 1, background: C.border, margin: "0 20px" }} />
+          <div style={{ padding: "20px 20px 24px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.text }}>Minha biblioteca</div>
+              <button onClick={() => navigate("library")} style={{ background: "none", border: "none", color: C.primary, cursor: "pointer", fontFamily: "Inter, sans-serif" }}>
+                Ver tudo
+              </button>
+            </div>
+            {savedProjects.length ? (
+              savedProjects.slice(0, 5).map((project) => (
+                <button key={project.id} onClick={() => navigate("library")} style={{
+                  width: "100%",
                   display: "flex",
+                  gap: 10,
                   alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                }}
-              >
-                <Code2 size={18} color={C.primary} />
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
-                  {p.name}
-                </div>
-                <div style={{ fontSize: 11, color: C.text3 }}>{p.category}</div>
-              </div>
-              <ChevronRight size={14} color={C.text3} />
+                  padding: "12px 0",
+                  background: "none",
+                  border: "none",
+                  borderBottom: `1px solid ${C.border}`,
+                  cursor: "pointer",
+                  textAlign: "left",
+                }}>
+                  <Package size={18} color={C.primary} />
+                  <span style={{ flex: 1 }}>
+                    <span style={{ display: "block", fontSize: 13, color: C.text }}>{project.name}</span>
+                    <span style={{ display: "block", fontSize: 11, color: C.text3 }}>{project.category}</span>
+                  </span>
+                  <ChevronRight size={14} color={C.text3} />
+                </button>
+              ))
+            ) : (
+              <div style={{ color: C.text3, fontSize: 13, padding: "10px 0" }}>Sua biblioteca ainda está vazia.</div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function ProfileEditScreen({ navigate }: { navigate: (s: Screen) => void }) {
+  const [profile, setProfile] = useState<ProfileUser | null>(null)
+  const [form, setForm] = useState({ name: "", username: "", email: "", bio: "" })
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [photoError, setPhotoError] = useState("")
+  const [error, setError] = useState("")
+  const fileInput = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    getCurrentUser()
+      .then(({ user }) => {
+        if (!user) {
+          navigate("login")
+          return
+        }
+        setProfile(user)
+        setForm({ name: user.name, username: user.username, email: user.email, bio: user.bio })
+      })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : "Não foi possível carregar o perfil."))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const updateField = (field: keyof typeof form) => (value: string) =>
+    setForm((current) => ({ ...current, [field]: value }))
+
+  const handlePhoto = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ""
+    if (!file) return
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 2 * 1024 * 1024) {
+      setPhotoError("Escolha uma imagem JPEG, PNG ou WebP de até 2 MB.")
+      return
+    }
+    setPhotoError("")
+    try {
+      const response = await uploadAvatar(file)
+      setProfile((current) => current ? { ...current, avatarUrl: response.avatarUrl } : current)
+    } catch (reason) {
+      setPhotoError(reason instanceof Error ? reason.message : "Não foi possível salvar a foto.")
+    }
+  }
+
+  const clearPhoto = async () => {
+    setPhotoError("")
+    try {
+      await removeAvatar()
+      setProfile((current) => current ? { ...current, avatarUrl: null } : current)
+    } catch (reason) {
+      setPhotoError(reason instanceof Error ? reason.message : "Não foi possível remover a foto.")
+    }
+  }
+
+  const save = async () => {
+    if (!profile) return
+    setSaving(true)
+    setError("")
+    try {
+      const response = await updateProfile(form)
+      if (response.user.email !== profile.email) {
+        sessionStorage.setItem("devio_pending_email", response.user.email)
+        sessionStorage.setItem("devio_confirmation_email_sent", String(response.emailSent))
+        if (response.confirmationToken) {
+          sessionStorage.setItem("devio_confirmation_token", response.confirmationToken)
+        }
+        navigate("email-confirmation")
+        return
+      }
+      navigate("profile")
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Não foi possível atualizar o perfil.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="phone-scroll" style={{ width: "100%", height: "100%", background: C.bg, overflowY: "auto" }}>
+      <Header title="Editar perfil" onBack={() => navigate("profile")} />
+      {loading ? (
+        <div style={{ padding: 32, textAlign: "center", color: C.text2 }}>Carregando perfil...</div>
+      ) : profile ? (
+        <div style={{ padding: "24px 28px 32px" }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 24 }}>
+            <div style={{ width: 96, height: 96, borderRadius: "50%", overflow: "hidden", background: C.surface2, display: "grid", placeItems: "center", marginBottom: 12 }}>
+              {profile.avatarUrl
+                ? <img src={profile.avatarUrl} alt={`Foto de ${profile.name}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                : <User size={36} color={C.text3} />}
             </div>
-          ))}
+            <input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" onChange={handlePhoto} style={{ display: "none" }} />
+            <Btn label="Adicionar ou alterar foto" onClick={() => fileInput.current?.click()} variant="secondary" small />
+            {profile.avatarUrl && <button onClick={clearPhoto} style={{ marginTop: 10, border: "none", background: "none", color: C.danger, cursor: "pointer" }}>Remover foto</button>}
+            {photoError && <div style={{ color: C.danger, fontSize: 12, marginTop: 10 }}>{photoError}</div>}
+          </div>
+          {error && <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>{error}</div>}
+          <Input label="Nome" value={form.name} onChange={updateField("name")} />
+          <Input label="Nome de usuário" value={form.username} onChange={updateField("username")} />
+          <Input label="E-mail" type="email" value={form.email} onChange={updateField("email")} />
+          <div style={{ marginBottom: 20 }}>
+            <label style={{ display: "block", fontSize: 12, color: C.text2, marginBottom: 6 }}>Biografia</label>
+            <textarea value={form.bio} maxLength={280} onChange={(event) => updateField("bio")(event.target.value)} rows={4} style={{
+              width: "100%",
+              padding: "12px 14px",
+              background: C.surface2,
+              border: `1.5px solid ${C.border}`,
+              borderRadius: 12,
+              color: C.text,
+              fontSize: 14,
+              outline: "none",
+              resize: "vertical",
+              fontFamily: "Inter, sans-serif",
+              boxSizing: "border-box",
+            }} />
+            <div style={{ textAlign: "right", color: C.text3, fontSize: 11 }}>{form.bio.length}/280</div>
+          </div>
+          <Btn label={saving ? "Salvando..." : "Salvar alterações"} onClick={save} full />
         </div>
-      </div>
+      ) : (
+        <div style={{ padding: 28, textAlign: "center", color: C.text2 }}>Faça login para editar seu perfil.</div>
+      )}
     </div>
   )
 }
 
 // ─── SCREEN: Settings ────────────────────────────────────────────────────────
 function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
+  const [logoutError, setLogoutError] = useState("")
+  const [loggingOut, setLoggingOut] = useState(false)
+  const logout = async () => {
+    setLogoutError("")
+    setLoggingOut(true)
+    try {
+      await logoutAccount()
+      navigate("login")
+    } catch (reason) {
+      setLogoutError(
+        reason instanceof Error ? reason.message : "Não foi possível encerrar a sessão.",
+      )
+    } finally {
+      setLoggingOut(false)
+    }
+  }
   const groups = [
     {
       title: "Conta",
@@ -3624,6 +4387,7 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
     >
       <Header title="Configurações" onBack={() => navigate("profile")} />
       <div style={{ padding: "16px 20px 24px" }}>
+        {logoutError && <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>{logoutError}</div>}
         {groups.map((g) => (
           <div key={g.title} style={{ marginBottom: 24 }}>
             <div
@@ -3658,6 +4422,12 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
                       i < g.items.length - 1 ? `1px solid ${C.border}` : "none",
                     cursor: "pointer",
                   }}
+                  onClick={() =>
+                    item.label === "Informações pessoais"
+                      ? navigate("profile-edit")
+                      : item.label === "Segurança e senha" &&
+                        navigate("password-change")
+                  }
                 >
                   <item.icon size={18} color={C.text2} />
                   <span style={{ flex: 1, fontSize: 14, color: C.text }}>
@@ -3679,7 +4449,8 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
           }}
         >
           <button
-            onClick={() => navigate("login")}
+            onClick={logout}
+            disabled={loggingOut}
             style={{
               width: "100%",
               display: "flex",
@@ -3700,7 +4471,7 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
                 fontFamily: "Inter, sans-serif",
               }}
             >
-              Sair da conta
+              {loggingOut ? "Saindo..." : "Sair da conta"}
             </span>
           </button>
         </div>
@@ -3996,11 +4767,14 @@ function CoverOverlay({ onClose }: { onClose: () => void }) {
 
 // ─── Phone Shell ──────────────────────────────────────────────────────────────
 export default function App() {
-  const [screen, setScreen] = useState<Screen>("splash")
+  const [screen, setScreen] = useState<Screen>(() => {
+    const params = new URLSearchParams(window.location.hash.slice(1))
+    if (params.has("confirmEmail")) return "email-confirmation"
+    if (params.has("resetPassword")) return "password-reset"
+    return "splash"
+  })
   const [history, setHistory] = useState<Screen[]>([])
-  const [projectData, setProjectData] = useState<Project>(
-    PROJECTS[0],
-  )
+  const [projectData, setProjectData] = useState<Project>(PROJECTS[0])
 
   const navigate = (s: Screen, data?: unknown) => {
     setHistory((h) => [...h, screen])
@@ -4036,6 +4810,8 @@ export default function App() {
         return <EmailConfirmationScreen navigate={navigate} />
       case "password-reset":
         return <PasswordResetScreen navigate={navigate} />
+      case "password-change":
+        return <PasswordChangeScreen navigate={navigate} />
       case "home":
         return <HomeScreen navigate={navigate} />
       case "explore":
@@ -4059,11 +4835,19 @@ export default function App() {
       case "security-check":
         return <SecurityCheckScreen navigate={navigate} project={projectData} />
       case "security-blocked":
-        return <SecurityCheckScreen navigate={navigate} blocked project={projectData} />
+        return (
+          <SecurityCheckScreen
+            navigate={navigate}
+            blocked
+            project={projectData}
+          />
+        )
       case "my-projects":
         return <MyProjectsScreen navigate={navigate} />
       case "profile":
         return <ProfileScreen navigate={navigate} />
+      case "profile-edit":
+        return <ProfileEditScreen navigate={navigate} />
       case "settings":
         return <SettingsScreen navigate={navigate} />
       case "report":
@@ -4082,13 +4866,19 @@ export default function App() {
         <aside className="desktop-sidebar">
           <div className="desktop-brand">
             <Code2 size={22} color={C.primary} />
-            <span>dev<span style={{ color: C.primary }}>.io</span></span>
+            <span>
+              dev<span style={{ color: C.primary }}>.io</span>
+            </span>
           </div>
           <div className="desktop-nav-caption">Workspace</div>
           <BottomNav active={activeTab} navigate={navigate} />
         </aside>
       )}
-      <main className={`desktop-content${showBottomNav ? "" : " desktop-content-auth"}`}>
+      <main
+        className={`desktop-content${
+          showBottomNav ? "" : " desktop-content-auth"
+        }`}
+      >
         {renderScreen()}
       </main>
     </div>
