@@ -423,6 +423,508 @@ const avatarUpload = multer({
 
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }))
 
+const paymentWebhookSecret = process.env.MERCADOPAGO_WEBHOOK_SECRET
+const paymentClientId = process.env.MERCADOPAGO_CLIENT_ID
+const paymentClientSecret = process.env.MERCADOPAGO_CLIENT_SECRET
+const paymentRedirectUri = process.env.MERCADOPAGO_REDIRECT_URI
+const paymentTokenEncryptionKey = process.env.MERCADOPAGO_TOKEN_ENCRYPTION_KEY
+  ? Buffer.from(process.env.MERCADOPAGO_TOKEN_ENCRYPTION_KEY, "base64")
+  : null
+if (paymentTokenEncryptionKey && paymentTokenEncryptionKey.length !== 32)
+  throw new Error("MERCADOPAGO_TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key.")
+const paymentApiUrl = (process.env.PUBLIC_API_URL || process.env.VITE_API_URL || "").replace(
+  /\/+$/,
+  "",
+)
+const publicAppUrl = (process.env.PUBLIC_APP_URL || "").replace(/\/+$/, "")
+
+function encryptPaymentTokens(tokens) {
+  if (!paymentTokenEncryptionKey)
+    throw new Error("Mercado Pago token encryption is not configured.")
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv("aes-256-gcm", paymentTokenEncryptionKey, iv)
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(tokens), "utf8"),
+    cipher.final(),
+  ])
+  return [
+    iv.toString("base64url"),
+    cipher.getAuthTag().toString("base64url"),
+    encrypted.toString("base64url"),
+  ].join(".")
+}
+
+function decryptPaymentTokens(ciphertext) {
+  if (!paymentTokenEncryptionKey)
+    throw new Error("Mercado Pago token encryption is not configured.")
+  const [iv, authTag, encrypted] = String(ciphertext).split(".")
+  if (!iv || !authTag || !encrypted)
+    throw new Error("Mercado Pago tokens have an invalid encrypted format.")
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    paymentTokenEncryptionKey,
+    Buffer.from(iv, "base64url"),
+  )
+  decipher.setAuthTag(Buffer.from(authTag, "base64url"))
+  return JSON.parse(
+    Buffer.concat([
+      decipher.update(Buffer.from(encrypted, "base64url")),
+      decipher.final(),
+    ]).toString("utf8"),
+  )
+}
+
+async function savePaymentTokens(userId, tokenResponse) {
+  const expiresIn = Number(tokenResponse.expires_in)
+  if (
+    !tokenResponse.access_token ||
+    !tokenResponse.refresh_token ||
+    !tokenResponse.user_id ||
+    !Number.isFinite(expiresIn) ||
+    expiresIn <= 0
+  )
+    throw new Error("Mercado Pago returned incomplete OAuth credentials.")
+  const expiresAt = new Date(Date.now() + expiresIn * 1000)
+  const { error } = await adminSupabase.from("mercadopago_accounts").upsert({
+    user_id: userId,
+    collector_id: String(tokenResponse.user_id),
+    token_ciphertext: encryptPaymentTokens({
+      accessToken: tokenResponse.access_token,
+      refreshToken: tokenResponse.refresh_token,
+    }),
+    expires_at: expiresAt.toISOString(),
+    updated_at: now(),
+  })
+  if (error) throw error
+  return { collectorId: String(tokenResponse.user_id), expiresAt }
+}
+
+async function getPaymentSellerToken(userId) {
+  if (!paymentTokenEncryptionKey || !paymentClientId || !paymentClientSecret)
+    throw new Error("Mercado Pago OAuth is not configured.")
+  const { data: account, error } = await adminSupabase
+    .from("mercadopago_accounts")
+    .select("collector_id, token_ciphertext, expires_at")
+    .eq("user_id", userId)
+    .maybeSingle()
+  if (error) throw error
+  if (!account) throw new Error("O publicador ainda não conectou uma conta Mercado Pago.")
+  let tokens = decryptPaymentTokens(account.token_ciphertext)
+  if (new Date(account.expires_at).getTime() > Date.now() + 5 * 60 * 1000)
+    return { accessToken: tokens.accessToken, collectorId: account.collector_id }
+
+  const refreshResponse = await fetch("https://api.mercadopago.com/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: paymentClientId,
+      client_secret: paymentClientSecret,
+      grant_type: "refresh_token",
+      refresh_token: tokens.refreshToken,
+    }),
+  })
+  const refreshed = await refreshResponse.json()
+  if (
+    !refreshResponse.ok ||
+    !refreshed.access_token ||
+    !refreshed.refresh_token ||
+    String(refreshed.user_id) !== account.collector_id
+  )
+    throw new Error("A conexão do publicador com o Mercado Pago expirou. Reconecte a conta.")
+  const saved = await savePaymentTokens(userId, refreshed)
+  tokens = {
+    accessToken: refreshed.access_token,
+    refreshToken: refreshed.refresh_token,
+  }
+  return { accessToken: tokens.accessToken, collectorId: saved.collectorId }
+}
+
+async function authenticatedSupabaseUser(req, res, next) {
+  const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1]
+  if (!token || !adminSupabase)
+    return res.status(401).json({ error: "Faça login para continuar." })
+  const { data, error } = await adminSupabase.auth.getUser(token)
+  if (error || !data.user?.email_confirmed_at)
+    return res.status(401).json({ error: "Sessão inválida ou e-mail não confirmado." })
+  req.paymentUser = data.user
+  next()
+}
+
+function parseBrlAmount(value) {
+  const raw = String(value || "")
+    .replace(/^R\$\s*/i, "")
+    .trim()
+  const normalized = raw.includes(",")
+    ? raw.replace(/\./g, "").replace(",", ".")
+    : raw
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null
+  const amount = Number(normalized)
+  return Number.isFinite(amount) ? amount : null
+}
+
+function isValidPaymentWebhook(req, paymentId) {
+  const signature = req.headers["x-signature"]
+  const requestId = req.headers["x-request-id"]
+  if (!paymentWebhookSecret || typeof signature !== "string" || typeof requestId !== "string")
+    return false
+  const parts = Object.fromEntries(
+    signature.split(",").map((part) => part.trim().split("=", 2)),
+  )
+  if (!parts.ts || !parts.v1 || !/^[a-f0-9]{64}$/i.test(parts.v1)) return false
+  const manifest = `id:${paymentId.toLowerCase()};request-id:${requestId};ts:${parts.ts};`
+  const expected = crypto
+    .createHmac("sha256", paymentWebhookSecret)
+    .update(manifest)
+    .digest()
+  const provided = Buffer.from(parts.v1, "hex")
+  return provided.length === expected.length && crypto.timingSafeEqual(provided, expected)
+}
+
+function mercadoPagoOAuthConfigured() {
+  return Boolean(
+    paymentClientId &&
+      paymentClientSecret &&
+      paymentRedirectUri &&
+      paymentWebhookSecret &&
+      paymentApiUrl &&
+      paymentTokenEncryptionKey &&
+      /^https:\/\//i.test(paymentRedirectUri) &&
+      /^https:\/\//i.test(publicAppUrl),
+  )
+}
+
+app.get("/api/payments/account", authenticatedSupabaseUser, async (req, res) => {
+  if (!adminSupabase)
+    return res.status(503).json({ error: "Pagamentos não configurados." })
+  const { data, error } = await adminSupabase
+    .from("mercadopago_accounts")
+    .select("collector_id, expires_at")
+    .eq("user_id", req.paymentUser.id)
+    .maybeSingle()
+  if (error) return res.status(500).json({ error: "Não foi possível consultar a conta de recebimento." })
+  return res.json({
+    configured: mercadoPagoOAuthConfigured(),
+    connected: Boolean(data),
+    collectorId: data?.collector_id || null,
+  })
+})
+
+app.post("/api/payments/account/connect", authenticatedSupabaseUser, async (req, res) => {
+  if (!mercadoPagoOAuthConfigured())
+    return res.status(503).json({ error: "A conexão de contas Mercado Pago não está configurada." })
+  try {
+    const state = crypto.randomBytes(32).toString("hex")
+    await adminSupabase
+      .from("payment_oauth_states")
+      .delete()
+      .lt("expires_at", now())
+    const { error } = await adminSupabase.from("payment_oauth_states").insert({
+      state_hash: hashToken(state),
+      user_id: req.paymentUser.id,
+      expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    })
+    if (error) throw error
+    const authorizationUrl = new URL("https://auth.mercadopago.com/authorization")
+    authorizationUrl.search = new URLSearchParams({
+      client_id: paymentClientId,
+      response_type: "code",
+      platform_id: "mp",
+      state,
+      redirect_uri: paymentRedirectUri,
+      scope: "offline_access",
+    }).toString()
+    return res.json({ authorizationUrl: authorizationUrl.toString() })
+  } catch (error) {
+    console.error("Mercado Pago authorization start failed", error)
+    return res.status(500).json({ error: "Não foi possível iniciar a conexão Mercado Pago." })
+  }
+})
+
+app.get("/api/payments/mercadopago/oauth/callback", async (req, res) => {
+  const redirectResult = (result) =>
+    res.redirect(`${publicAppUrl}/?mp_connected=${encodeURIComponent(result)}`)
+  if (!mercadoPagoOAuthConfigured())
+    return res.status(503).send("Conexão com Mercado Pago não configurada.")
+  const code = String(req.query.code || "")
+  const state = String(req.query.state || "")
+  if (!code || !state) return redirectResult("error")
+  try {
+    const { data: oauthState, error: stateError } = await adminSupabase
+      .from("payment_oauth_states")
+      .select("user_id, expires_at")
+      .eq("state_hash", hashToken(state))
+      .maybeSingle()
+    if (stateError) throw stateError
+    if (!oauthState || new Date(oauthState.expires_at).getTime() < Date.now())
+      return redirectResult("error")
+    const { error: deleteStateError } = await adminSupabase
+      .from("payment_oauth_states")
+      .delete()
+      .eq("state_hash", hashToken(state))
+    if (deleteStateError) throw deleteStateError
+
+    const tokenResponse = await fetch("https://api.mercadopago.com/oauth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: paymentClientId,
+        client_secret: paymentClientSecret,
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: paymentRedirectUri,
+      }),
+    })
+    const tokens = await tokenResponse.json()
+    if (
+      !tokenResponse.ok ||
+      !tokens.access_token ||
+      !tokens.refresh_token ||
+      !tokens.user_id
+    ) {
+      console.error("Mercado Pago OAuth token exchange failed", tokenResponse.status)
+      return redirectResult("error")
+    }
+    await savePaymentTokens(oauthState.user_id, tokens)
+    return redirectResult("success")
+  } catch (error) {
+    console.error("Mercado Pago OAuth callback failed", error)
+    return redirectResult("error")
+  }
+})
+
+app.post("/api/payments/checkout", authenticatedSupabaseUser, async (req, res) => {
+  if (!adminSupabase || !paymentWebhookSecret || !mercadoPagoOAuthConfigured())
+    return res.status(503).json({ error: "O checkout Mercado Pago não está configurado no servidor." })
+  if (!paymentApiUrl)
+    return res.status(503).json({ error: "Configure PUBLIC_API_URL para receber as confirmações de pagamento." })
+  const { projectId, kind } = req.body || {}
+  if (!uuidPattern.test(String(projectId || "")) || !["purchase", "donation"].includes(kind))
+    return res.status(400).json({ error: "Dados de pagamento inválidos." })
+  const amount = kind === "donation" ? Number(req.body.amount) : null
+  if (
+    kind === "donation" &&
+    (!Number.isFinite(amount) ||
+      amount < 1 ||
+      amount > 1000 ||
+      Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-8)
+  )
+    return res.status(400).json({ error: "A doação deve ser entre R$ 1 e R$ 1.000." })
+
+  let orderId
+  let preferenceCreated = false
+  try {
+    const [{ data: project, error: projectError }, { data: profile, error: profileError }] =
+      await Promise.all([
+        adminSupabase
+          .from("projects")
+          .select("id, owner_id, name, price, accept_donations, review_status, is_blocked")
+          .eq("id", projectId)
+          .maybeSingle(),
+        adminSupabase
+          .from("profiles")
+          .select("is_blocked")
+          .eq("id", req.paymentUser.id)
+          .maybeSingle(),
+      ])
+    if (projectError) throw projectError
+    if (profileError) throw profileError
+    if (!project || project.review_status !== "approved" || project.is_blocked)
+      return res.status(404).json({ error: "Este projeto não está disponível." })
+    if (profile?.is_blocked)
+      return res.status(403).json({ error: "Sua conta está bloqueada para pagamentos." })
+    if (kind === "donation" && !project.accept_donations)
+      return res.status(400).json({ error: "Este projeto não está aceitando doações." })
+
+    const price = kind === "purchase" ? parseBrlAmount(project.price) : amount
+    if (price === null || price < 1 || price > 1000000)
+      return res.status(400).json({ error: "O preço deste projeto não é válido para pagamento." })
+    if (project.owner_id === req.paymentUser.id)
+      return res.status(400).json({ error: "Você não pode pagar pelo próprio projeto." })
+    if (kind === "purchase") {
+      const { data: existing, error: existingError } = await adminSupabase
+        .from("library")
+        .select("project_id")
+        .eq("user_id", req.paymentUser.id)
+        .eq("project_id", project.id)
+        .maybeSingle()
+      if (existingError) throw existingError
+      if (existing) return res.status(409).json({ error: "Este projeto já está na sua biblioteca." })
+    }
+
+    let sellerToken
+    try {
+      sellerToken = await getPaymentSellerToken(project.owner_id)
+    } catch (error) {
+      return res.status(409).json({
+        error: error instanceof Error
+          ? error.message
+          : "O publicador precisa conectar o Mercado Pago antes de receber pagamentos.",
+      })
+    }
+
+    orderId = id()
+    const { error: insertError } = await adminSupabase.from("payment_orders").insert({
+      id: orderId,
+      buyer_id: req.paymentUser.id,
+      project_id: project.id,
+      seller_id: project.owner_id,
+      kind,
+      amount: price,
+    })
+    if (insertError) throw insertError
+
+    const appBaseUrl = (process.env.PUBLIC_APP_URL || process.env.WEB_ORIGIN || "").split(",")[0].replace(/\/+$/, "")
+    if (!/^https:\/\//i.test(appBaseUrl)) {
+      await adminSupabase.from("payment_orders").delete().eq("id", orderId)
+      return res.status(503).json({ error: "Configure PUBLIC_APP_URL com a URL HTTPS pública do app." })
+    }
+    const preferenceResponse = await fetch("https://api.mercadopago.com/checkout/preferences", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${sellerToken.accessToken}`,
+        "Content-Type": "application/json",
+        "X-Idempotency-Key": orderId,
+      },
+      body: JSON.stringify({
+        items: [{
+          id: project.id,
+          title: kind === "donation" ? `Apoio a ${project.name}` : project.name,
+          quantity: 1,
+          currency_id: "BRL",
+          unit_price: price,
+        }],
+        payer: req.paymentUser.email ? { email: req.paymentUser.email } : undefined,
+        external_reference: orderId,
+        back_urls: {
+          success: `${appBaseUrl}/?payment=success&order_id=${orderId}`,
+          pending: `${appBaseUrl}/?payment=pending&order_id=${orderId}`,
+          failure: `${appBaseUrl}/?payment=failure&order_id=${orderId}`,
+        },
+        auto_return: "approved",
+        notification_url: `${paymentApiUrl}/api/payments/webhook`,
+      }),
+    })
+    const preference = await preferenceResponse.json()
+    const checkoutUrl = sellerToken.accessToken.startsWith("TEST-")
+      ? preference.sandbox_init_point || preference.init_point
+      : preference.init_point
+    if (!preferenceResponse.ok || !preference.id || !checkoutUrl) {
+      await adminSupabase.from("payment_orders").delete().eq("id", orderId)
+      console.error("Mercado Pago preference creation failed", preference.status || preferenceResponse.status)
+      return res.status(502).json({ error: "O provedor não conseguiu iniciar o checkout. Tente novamente." })
+    }
+    preferenceCreated = true
+    const { error: preferenceError } = await adminSupabase
+      .from("payment_orders")
+      .update({ preference_id: preference.id })
+      .eq("id", orderId)
+    if (preferenceError) throw preferenceError
+    return res.json({ checkoutUrl, orderId })
+  } catch (error) {
+    if (orderId && !preferenceCreated)
+      await adminSupabase.from("payment_orders").delete().eq("id", orderId)
+    console.error("Payment checkout creation failed", error)
+    return res.status(500).json({ error: "Não foi possível iniciar o pagamento." })
+  }
+})
+
+app.get("/api/payments/orders/:id", authenticatedSupabaseUser, async (req, res) => {
+  if (!adminSupabase) return res.status(503).json({ error: "Pagamentos não configurados." })
+  if (!uuidPattern.test(req.params.id))
+    return res.status(400).json({ error: "Pedido inválido." })
+  const { data, error } = await adminSupabase
+    .from("payment_orders")
+    .select("id, kind, amount, status, project_id")
+    .eq("id", req.params.id)
+    .eq("buyer_id", req.paymentUser.id)
+    .maybeSingle()
+  if (error) return res.status(500).json({ error: "Não foi possível consultar o pagamento." })
+  if (!data) return res.status(404).json({ error: "Pagamento não encontrado." })
+  return res.json({ order: data })
+})
+
+app.post("/api/payments/webhook", async (req, res) => {
+  const paymentId = String(
+    req.query["data.id"] || req.query.data_id || req.body?.data?.id || "",
+  )
+  const topic = String(req.query.type || req.query.topic || req.body?.type || "")
+  if (!paymentId || !["payment", "payments"].includes(topic))
+    return res.sendStatus(200)
+  if (!isValidPaymentWebhook(req, paymentId))
+    return res.status(401).json({ error: "Assinatura do webhook inválida." })
+  if (!paymentWebhookSecret || !adminSupabase || !mercadoPagoOAuthConfigured())
+    return res.status(503).json({ error: "Processamento de pagamentos não configurado." })
+  try {
+    const collectorId = String(req.body?.user_id || req.query.user_id || "")
+    if (!/^\d+$/.test(collectorId)) return res.sendStatus(200)
+    const { data: connectedAccount, error: accountError } = await adminSupabase
+      .from("mercadopago_accounts")
+      .select("user_id, collector_id")
+      .eq("collector_id", collectorId)
+      .maybeSingle()
+    if (accountError) throw accountError
+    if (!connectedAccount) return res.sendStatus(200)
+    const sellerToken = await getPaymentSellerToken(connectedAccount.user_id)
+    const response = await fetch(`https://api.mercadopago.com/v1/payments/${encodeURIComponent(paymentId)}`, {
+      headers: { Authorization: `Bearer ${sellerToken.accessToken}` },
+    })
+    const payment = await response.json()
+    if (!response.ok) throw new Error("Mercado Pago não retornou o pagamento.")
+    if (String(payment.collector_id) !== sellerToken.collectorId)
+      return res.status(422).json({ error: "A conta recebedora do pagamento não confere." })
+    if (!uuidPattern.test(String(payment.external_reference || "")))
+      return res.sendStatus(200)
+    const { data: order, error: orderError } = await adminSupabase
+      .from("payment_orders")
+      .select("id, buyer_id, project_id, seller_id, kind, amount, status")
+      .eq("id", payment.external_reference)
+      .maybeSingle()
+    if (orderError) throw orderError
+    if (!order) return res.sendStatus(200)
+    if (order.seller_id !== connectedAccount.user_id)
+      return res.status(422).json({ error: "O publicador recebedor do pedido não confere." })
+    if (payment.currency_id !== "BRL" || Number(payment.transaction_amount) !== Number(order.amount))
+      return res.status(422).json({ error: "Valor ou moeda do pagamento não confere." })
+
+    const status =
+      payment.status === "charged_back"
+        ? "refunded"
+        : ["approved", "in_process", "rejected", "cancelled", "refunded"].includes(
+              payment.status,
+            )
+          ? payment.status
+          : "pending"
+    const { error: transactionError } = await adminSupabase
+      .from("payment_transactions")
+      .upsert({
+        payment_id: String(payment.id),
+        order_id: order.id,
+        status,
+        payment_method_id: payment.payment_method_id || null,
+        updated_at: now(),
+      })
+    if (transactionError) throw transactionError
+    if (status === "approved" || status === "refunded" || order.status !== "approved") {
+      const { error: updateError } = await adminSupabase
+        .from("payment_orders")
+        .update({ status, updated_at: now() })
+        .eq("id", order.id)
+      if (updateError) throw updateError
+    }
+    if (status === "approved" && order.kind === "purchase") {
+      const { error: libraryError } = await adminSupabase.from("library").upsert(
+        { user_id: order.buyer_id, project_id: order.project_id },
+        { onConflict: "user_id,project_id", ignoreDuplicates: true },
+      )
+      if (libraryError) throw libraryError
+    }
+    return res.sendStatus(200)
+  } catch (error) {
+    console.error("Payment webhook processing failed", error)
+    return res.status(500).json({ error: "Não foi possível processar a confirmação." })
+  }
+})
+
 const adminPageSize = 30
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -485,12 +987,18 @@ app.get("/api/admin/users", requireAdmin, async (req, res) => {
 app.get("/api/admin/projects", requireAdmin, async (req, res) => {
   const page = adminPage(req.query.page)
   const offset = (page - 1) * adminPageSize
-  const { data, error, count } = await adminSupabase
+  const status = req.query.status ?? "pending"
+  if (!["pending", "approved", "rejected", "all"].includes(status))
+    return res.status(400).json({ error: "Filtro de análise inválido." })
+
+  let projectsQuery = adminSupabase
     .from("projects")
     .select(
-      "id, name, owner_id, category, version, created_at, file_path, file_name, is_blocked, profiles!projects_owner_id_fkey(username, display_name)",
+      "id, name, owner_id, category, version, created_at, file_path, file_name, is_blocked, review_status, profiles!projects_owner_id_fkey(username, display_name)",
       { count: "exact" },
     )
+  if (status !== "all") projectsQuery = projectsQuery.eq("review_status", status)
+  const { data, error, count } = await projectsQuery
     .order("created_at", { ascending: false })
     .range(offset, offset + adminPageSize - 1)
   if (error)
@@ -511,6 +1019,7 @@ app.get("/api/admin/projects", requireAdmin, async (req, res) => {
         fileName: project.file_name,
         createdAt: project.created_at,
         blocked: Boolean(project.is_blocked),
+        reviewStatus: project.review_status,
       }
     }),
     hasMore: offset + (data || []).length < (count || 0),
@@ -669,6 +1178,32 @@ app.patch("/api/admin/projects/:id/block", requireAdmin, async (req, res) => {
   if (!data)
     return res.status(404).json({ error: "Submissão não encontrada." })
   return res.json({ ok: true, blocked: req.body.blocked })
+})
+
+app.patch("/api/admin/projects/:id/review", requireAdmin, async (req, res) => {
+  const projectId = req.params.id
+  const { status, note } = req.body || {}
+  if (!uuidPattern.test(projectId))
+    return res.status(400).json({ error: "Identificador de submissão inválido." })
+  if (status !== "approved" && status !== "rejected")
+    return res.status(400).json({ error: "Informe se a submissão foi aprovada ou recusada." })
+  if (note !== undefined && (typeof note !== "string" || note.length > 1000))
+    return res.status(400).json({ error: "O motivo da recusa deve ter até 1.000 caracteres." })
+
+  const { data, error } = await adminSupabase
+    .from("projects")
+    .update({
+      review_status: status,
+      review_note: status === "rejected" ? (note || "").trim() : null,
+    })
+    .eq("id", projectId)
+    .select("id, review_status")
+    .maybeSingle()
+  if (error)
+    return res.status(502).json({ error: "Não foi possível registrar a decisão de análise." })
+  if (!data)
+    return res.status(404).json({ error: "Submissão não encontrada." })
+  return res.json({ ok: true, reviewStatus: data.review_status })
 })
 
 app.post("/api/auth/register", async (req, res) => {
@@ -1217,15 +1752,50 @@ app.get("/api/projects/:id/sandbox", async (req, res) => {
   if (!uuidPattern.test(req.params.id))
     return res.status(400).json({ error: "Identificador de projeto inválido." })
 
+  let viewerId = null
+  const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1]
+  if (token) {
+    const { data: userData, error: userError } = await adminSupabase.auth.getUser(token)
+    if (userError || !userData.user)
+      return res.status(401).json({ error: "Sessão inválida ou expirada." })
+    viewerId = userData.user.id
+  }
+
   const { data: project, error } = await adminSupabase
     .from("projects")
-    .select("file_path, file_name, file_size, file_type, sandbox_type")
+    .select("owner_id, file_path, file_name, file_size, file_type, sandbox_type, price")
     .eq("id", req.params.id)
     .eq("is_blocked", false)
+    .eq("review_status", "approved")
     .maybeSingle()
   if (error)
     return res.status(502).json({ error: "Não foi possível carregar o projeto." })
   if (!project)
+    return res.status(404).json({ error: "Projeto não encontrado." })
+  if (project.price !== "Grátis" && project.owner_id !== viewerId) {
+    if (!viewerId)
+      return res.status(401).json({ error: "Entre na conta que comprou este projeto." })
+    const { data: order, error: orderError } = await adminSupabase
+      .from("payment_orders")
+      .select("id")
+      .eq("project_id", req.params.id)
+      .eq("buyer_id", viewerId)
+      .eq("kind", "purchase")
+      .eq("status", "approved")
+      .limit(1)
+      .maybeSingle()
+    if (orderError)
+      return res.status(502).json({ error: "Não foi possível verificar a compra." })
+    if (!order)
+      return res.status(403).json({ error: "Compre o projeto para abrir a prévia." })
+  }
+  const { data: profileIsPublic, error: privacyError } =
+    await adminSupabase.rpc("is_profile_public", {
+      target_user_id: project.owner_id,
+    })
+  if (privacyError)
+    return res.status(502).json({ error: "Não foi possível verificar a privacidade do perfil." })
+  if (!profileIsPublic)
     return res.status(404).json({ error: "Projeto não encontrado." })
   if (project.file_size > 25 * 1024 * 1024)
     return res.status(413).json({

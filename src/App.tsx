@@ -53,6 +53,7 @@ import {
   UserCheck,
   Archive,
   ImagePlus,
+  Download,
 } from "lucide-react"
 import { inspectProjectArchive } from "./sandbox/archive"
 import type { ArchivePreview } from "./sandbox/archive"
@@ -61,14 +62,20 @@ import {
   changePassword,
   completePasswordReset,
   confirmEmail,
+  connectPaymentAccount,
+  createPaymentCheckout,
   deleteAdminProject,
   deleteAdminUser,
   deleteProject,
   downloadProject,
+  getAppSettings,
   getAdminProjects,
   getAdminUsers,
   getCurrentUser,
   getLibrary,
+  getNotifications,
+  getPaymentAccount,
+  getPaymentOrder,
   getPublicProfile,
   getPublicProject,
   getMyProjects,
@@ -78,19 +85,25 @@ import {
   logoutAccount,
   loginAccount,
   loginGoogle,
+  markAllNotificationsRead,
+  markNotificationRead,
   removeAvatar,
   registerAccount,
   requestPasswordReset,
   resendConfirmation,
   setAdminProjectBlocked,
+  setAdminProjectReview,
   setAdminUserBlocked,
   setProfileFollow,
   updateProfile,
   updateProject,
   uploadAvatar,
   uploadProject,
+  updateAppSettings,
 } from "./lib/api"
 import type {
+  AppNotification,
+  AppSettings,
   AdminProject,
   AdminUser,
   ApiProject,
@@ -100,6 +113,8 @@ import type {
 } from "./lib/api"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+type AppTheme = "dark" | "light"
+
 type Screen =
   | "splash"
   | "login"
@@ -114,6 +129,8 @@ type Screen =
   | "acquire"
   | "acquire-success"
   | "donate"
+  | "payment-result"
+  | "payment-account"
   | "library"
   | "publish"
   | "security-check"
@@ -125,26 +142,61 @@ type Screen =
   | "shared-project"
   | "profile-edit"
   | "settings"
+  | "notifications"
+  | "appearance"
+  | "privacy"
+  | "terms"
+  | "privacy-policy"
   | "admin"
   | "report"
 
 // ─── Shared colour tokens ─────────────────────────────────────────────────────
-const C = {
-  bg: "#08080e",
-  surface: "#10101a",
-  surface2: "#18182a",
-  surface3: "#20203a",
-  border: "#2a2a44",
-  primary: "#4f6ef7",
-  primaryDim: "#3a54d4",
-  accent: "#7c3aed",
-  cyan: "#06b6d4",
-  success: "#22c55e",
-  warning: "#f59e0b",
-  danger: "#ef4444",
-  text: "#f0f0ff",
-  text2: "#9090b8",
-  text3: "#55557a",
+const themePalettes: Record<AppTheme, Record<string, string>> = {
+  dark: {
+    bg: "#08080e",
+    surface: "#10101a",
+    surface2: "#18182a",
+    surface3: "#20203a",
+    border: "#2a2a44",
+    primary: "#4f6ef7",
+    primaryDim: "#3a54d4",
+    accent: "#7c3aed",
+    cyan: "#06b6d4",
+    success: "#22c55e",
+    warning: "#f59e0b",
+    danger: "#ef4444",
+    text: "#f0f0ff",
+    text2: "#9090b8",
+    text3: "#55557a",
+  },
+  light: {
+    bg: "#f5f6fb",
+    surface: "#ffffff",
+    surface2: "#eef0f8",
+    surface3: "#e5e8f2",
+    border: "#d8dced",
+    primary: "#405bd6",
+    primaryDim: "#3149bc",
+    accent: "#6b3ac7",
+    cyan: "#087f99",
+    success: "#138544",
+    warning: "#9b5b00",
+    danger: "#c53030",
+    text: "#171a2a",
+    text2: "#4e5368",
+    text3: "#74798d",
+  },
+}
+const initialTheme: AppTheme =
+  localStorage.getItem("devio-theme") === "light" ? "light" : "dark"
+const C = { ...themePalettes[initialTheme] }
+document.documentElement.dataset.theme = initialTheme
+document.documentElement.dataset.reduceMotion =
+  localStorage.getItem("devio-reduce-motion") === "true" ? "true" : "false"
+
+function applyTheme(theme: AppTheme) {
+  Object.assign(C, themePalettes[theme])
+  document.documentElement.dataset.theme = theme
 }
 
 type Project = {
@@ -160,6 +212,7 @@ type Project = {
   fileType?: string
   sandboxType?: string
   acceptDonations?: boolean
+  reviewStatus?: "pending" | "approved" | "rejected"
 }
 
 function normalizeProject(value: ApiProject): Project {
@@ -176,6 +229,7 @@ function normalizeProject(value: ApiProject): Project {
     fileType: typeof value.fileType === "string" ? value.fileType : undefined,
     sandboxType: typeof value.sandboxType === "string" ? value.sandboxType : undefined,
     acceptDonations: Boolean(value.acceptDonations),
+    reviewStatus: value.reviewStatus,
   }
 }
 
@@ -475,6 +529,7 @@ function ProjectCard({
 }) {
   return (
     <div
+      className="project-card"
       onClick={onPress}
       style={{
         background: C.surface,
@@ -482,7 +537,8 @@ function ProjectCard({
         borderRadius: 16,
         padding: 12,
         cursor: "pointer",
-        transition: "border-color 0.2s",
+        transition:
+          "transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease",
         display: "flex",
         gap: 12,
         alignItems: "flex-start",
@@ -564,6 +620,7 @@ function BottomNav({
     { id: "publish", label: "Publicar", icon: Upload },
     { id: "library", label: "Biblioteca", icon: BookOpen },
     { id: "profile", label: "Perfil", icon: User },
+    { id: "notifications", label: "Avisos", icon: BellIcon },
   ]
   return (
     <nav className="app-bottom-nav" aria-label="Navegação principal">
@@ -1844,11 +1901,10 @@ function HomeScreen({
       {/* Categories */}
       <SectionTitle title="Categorias" />
       <div
+        className="home-category-list"
         style={{
-          display: "flex",
           gap: 8,
           padding: "8px 20px 20px",
-          overflowX: "auto",
         }}
       >
         {CATEGORIES.map(({ label, icon: Icon, color }) => (
@@ -1897,10 +1953,9 @@ function HomeScreen({
         action={{ label: "Ver todos", onClick: () => navigate("explore") }}
       />
       <div
+        className="project-list"
         style={{
           padding: "8px 20px 20px",
-          display: "flex",
-          flexDirection: "column",
           gap: 10,
         }}
       >
@@ -2064,9 +2119,10 @@ function ExploreScreen({
       {/* Categories grid */}
       <SectionTitle title="Categorias" />
       <div
+        className="category-grid"
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr",
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
           gap: 10,
           padding: "8px 20px 20px",
         }}
@@ -2122,10 +2178,9 @@ function ExploreScreen({
         }
       />
       <div
+        className="project-list"
         style={{
           padding: "8px 20px 24px",
-          display: "flex",
-          flexDirection: "column",
           gap: 10,
         }}
       >
@@ -2608,14 +2663,26 @@ function AcquireScreen({
   navigate: (s: Screen, data?: unknown) => void
 }) {
   const isFree = project.price === "Grátis"
-  const [paymentMethod, setPaymentMethod] = useState("PIX")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const acquire = async () => {
     if (!isFree) {
-      setError(
-        "O checkout ainda não está integrado a um provedor. Nenhuma cobrança foi feita e o projeto não foi adicionado à biblioteca.",
-      )
+      setLoading(true)
+      setError("")
+      try {
+        const { checkoutUrl } = await createPaymentCheckout({
+          projectId: String(project.id),
+          kind: "purchase",
+        })
+        window.location.assign(checkoutUrl)
+      } catch (reason) {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Não foi possível iniciar o pagamento.",
+        )
+        setLoading(false)
+      }
       return
     }
     setLoading(true)
@@ -2780,60 +2847,6 @@ function AcquireScreen({
             >
               Forma de pagamento
             </div>
-            {["Cartão de crédito", "PIX", "Boleto"].map((method) => {
-              const selected = paymentMethod === method
-              return (
-              <button
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                onClick={() => setPaymentMethod(method)}
-                key={method}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  width: "100%",
-                  background: selected ? C.primary + "11" : C.surface,
-                  border: `1.5px solid ${selected ? C.primary : C.border}`,
-                  borderRadius: 12,
-                  padding: "12px 14px",
-                  marginBottom: 8,
-                  cursor: "pointer",
-                  textAlign: "left",
-                }}
-              >
-                <div
-                  style={{
-                    width: 18,
-                    height: 18,
-                    borderRadius: "50%",
-                    border: `2px solid ${selected ? C.primary : C.border}`,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  {selected && (
-                    <div
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: "50%",
-                        background: C.primary,
-                      }}
-                    />
-                  )}
-                </div>
-                <CreditCard size={15} color={selected ? C.primary : C.text3} />
-                <span
-                  style={{ fontSize: 13, color: selected ? C.text : C.text2 }}
-                >
-                  {method}
-                </span>
-              </button>
-              )
-            })}
             <div
               style={{
                 color: C.warning,
@@ -2846,16 +2859,17 @@ function AcquireScreen({
                 marginTop: 12,
               }}
             >
-              Checkout ainda indisponível. Configure um provedor de pagamentos
-              para aceitar {paymentMethod.toLowerCase()}; não informe dados de
-              cartão nesta tela.
+              Checkout seguro Mercado Pago. As formas disponíveis, como PIX,
+              cartões e boleto, serão exibidas no provedor. O pagamento será
+              feito diretamente para a conta Mercado Pago conectada pelo
+              publicador.
             </div>
             <div style={{ marginTop: 24 }}>
               <Btn
-                label="Checkout indisponível"
+                label={loading ? "Abrindo checkout..." : "Pagar com Mercado Pago"}
                 onClick={acquire}
                 full
-                variant="secondary"
+                variant="primary"
               />
             </div>
           </>
@@ -2958,22 +2972,42 @@ function DonateScreen({
 }) {
   const [selected, setSelected] = useState<number | null>(null)
   const [custom, setCustom] = useState("")
-  const [paymentMethod, setPaymentMethod] = useState("PIX")
   const [error, setError] = useState("")
+  const [loading, setLoading] = useState(false)
   const amounts = [5, 10, 20, 50]
-  const donate = () => {
+  const donate = async () => {
     if (!project.acceptDonations) {
       setError("Este projeto não está aceitando doações.")
       return
     }
     const amount = custom ? Number(custom.replace(",", ".")) : selected
-    if (!amount || !Number.isFinite(amount) || amount < 1 || amount > 1000) {
-      setError("Escolha ou informe um valor entre R$ 1 e R$ 1.000.")
+    if (
+      !amount ||
+      !Number.isFinite(amount) ||
+      amount < 1 ||
+      amount > 1000 ||
+      Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-8
+    ) {
+      setError("Escolha ou informe um valor entre R$ 1 e R$ 1.000, com até dois centavos.")
       return
     }
-    setError(
-      `O pagamento por ${paymentMethod} ainda não está integrado. Nenhuma doação foi cobrada.`,
-    )
+    setError("")
+    setLoading(true)
+    try {
+      const { checkoutUrl } = await createPaymentCheckout({
+        projectId: String(project.id),
+        kind: "donation",
+        amount,
+      })
+      window.location.assign(checkoutUrl)
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível iniciar o pagamento.",
+      )
+      setLoading(false)
+    }
   }
   return (
     <div
@@ -3119,33 +3153,10 @@ function DonateScreen({
           />
         </div>
 
-        <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 }}>
-          Forma de pagamento
-        </div>
-        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-          {["PIX", "Cartão"].map((method) => {
-            const active = paymentMethod === method
-            return (
-              <button
-                key={method}
-                type="button"
-                aria-pressed={active}
-                onClick={() => setPaymentMethod(method)}
-                style={{
-                  flex: 1,
-                  padding: "11px",
-                  border: `1px solid ${active ? C.primary : C.border}`,
-                  borderRadius: 10,
-                  background: active ? C.primary + "22" : C.surface,
-                  color: active ? C.primary : C.text2,
-                  cursor: "pointer",
-                  fontFamily: "Inter, sans-serif",
-                }}
-              >
-                {method}
-              </button>
-            )
-          })}
+        <div style={{ fontSize: 12, color: C.text2, marginBottom: 16, lineHeight: 1.5 }}>
+          Pagamento seguro pelo Mercado Pago. PIX, cartões, boleto e outras
+          opções disponíveis serão apresentadas no checkout. O pagamento vai
+          diretamente para a conta Mercado Pago conectada pelo publicador.
         </div>
 
         {error && (
@@ -3154,11 +3165,86 @@ function DonateScreen({
           </div>
         )}
         <Btn
-          label={project.acceptDonations ? "Continuar para pagamento" : "Doações indisponíveis"}
+          label={
+            !project.acceptDonations
+              ? "Doações indisponíveis"
+              : loading
+                ? "Abrindo checkout..."
+                : "Apoiar com Mercado Pago"
+          }
           onClick={donate}
           full
           variant={project.acceptDonations ? "primary" : "secondary"}
         />
+      </div>
+    </div>
+  )
+}
+
+function PaymentResultScreen({
+  orderId,
+  navigate,
+}: {
+  orderId: string
+  navigate: (s: Screen, data?: unknown) => void
+}) {
+  const [status, setStatus] = useState("pending")
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    let active = true
+    let timer: ReturnType<typeof setTimeout>
+    const refresh = async () => {
+      try {
+        const { order } = await getPaymentOrder(orderId)
+        if (!active) return
+        setStatus(order.status)
+        if (["pending", "in_process"].includes(order.status))
+          timer = setTimeout(refresh, 2500)
+      } catch (reason) {
+        if (active)
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "Não foi possível consultar o pagamento.",
+          )
+      }
+    }
+    if (orderId) void refresh()
+    else setError("Não foi possível identificar o pedido.")
+    return () => {
+      active = false
+      clearTimeout(timer)
+    }
+  }, [orderId])
+
+  const approved = status === "approved"
+  const terminal = !["pending", "in_process"].includes(status)
+  const resultText = approved
+    ? "Pagamento confirmado. Obrigado!"
+    : terminal
+      ? "O pagamento não foi aprovado. Você pode tentar novamente."
+      : "Aguardando confirmação do Mercado Pago..."
+
+  return (
+    <div className="phone-scroll" style={{ width: "100%", height: "100%", background: C.bg }}>
+      <Header title="Status do pagamento" />
+      <div style={{ maxWidth: 560, margin: "48px auto", padding: "24px 20px", textAlign: "center" }}>
+        <div style={{ color: approved ? C.success : C.primary, marginBottom: 16 }}>
+          {approved ? <CheckCircle size={42} /> : <Clock size={42} />}
+        </div>
+        <div style={{ color: C.text, fontSize: 18, fontWeight: 700 }}>
+          {error ? "Não foi possível consultar o pedido" : resultText}
+        </div>
+        {error && <div role="alert" style={{ color: C.danger, fontSize: 13, marginTop: 10 }}>{error}</div>}
+        {!terminal && !error && (
+          <div style={{ color: C.text2, fontSize: 13, marginTop: 10 }}>
+            Esta tela atualiza automaticamente. Não faça outro pagamento enquanto o status estiver pendente.
+          </div>
+        )}
+        <div style={{ marginTop: 24 }}>
+          <Btn label="Voltar ao início" onClick={() => navigate("home")} full />
+        </div>
       </div>
     </div>
   )
@@ -3405,7 +3491,7 @@ function PublishScreen({
         )}
         {/* Info banner */}
         <div
-          onClick={() => fileInputRef.current?.click()}
+          className="form-field"
           style={{
             background: C.primary + "11",
             border: `1px solid ${C.primary}33`,
@@ -3436,7 +3522,7 @@ function PublishScreen({
           onChange={set("name")}
         />
 
-        <div style={{ marginBottom: 16 }}>
+        <div className="form-field" style={{ marginBottom: 16 }}>
           <div
             style={{
               fontSize: 12,
@@ -3468,7 +3554,7 @@ function PublishScreen({
           />
         </div>
 
-        <div style={{ marginBottom: 16 }}>
+        <div className="form-field" style={{ marginBottom: 16 }}>
           <div
             style={{
               fontSize: 12,
@@ -3514,6 +3600,7 @@ function PublishScreen({
         />
 
         <div
+          className="form-field"
           style={{
             background: C.surface,
             border: `2px dashed ${C.border}`,
@@ -3552,7 +3639,7 @@ function PublishScreen({
           )}
         </div>
 
-        <div style={{ marginBottom: 16 }}>
+        <div className="form-field" style={{ marginBottom: 16 }}>
           <label
             htmlFor="sandbox-type"
             style={{ display: "block", fontSize: 12, color: C.text2, marginBottom: 6 }}
@@ -3621,11 +3708,13 @@ function PublishScreen({
           <span style={{ fontSize: 13, color: C.text2 }}>Aceitar doações</span>
         </div>
 
-        <Btn
-          label={uploading ? "Enviando arquivo..." : "Publicar projeto"}
-          onClick={publish}
-          full
-        />
+        <div className="form-field">
+          <Btn
+            label={uploading ? "Enviando arquivo..." : "Publicar projeto"}
+            onClick={publish}
+            full
+          />
+        </div>
       </div>
     </div>
   )
@@ -4032,9 +4121,22 @@ function SecurityCheckScreen({
   const steps = [
     { label: "Arquivo recebido", done: true },
     { label: "Arquivo salvo no Supabase Storage", done: true },
-    { label: "Sandbox isolado disponível no navegador", done: true },
+    { label: "Submissão enviada para análise", done: true },
   ]
   const done = true
+  const reviewStatus = project?.reviewStatus || "pending"
+  const reviewLabel =
+    reviewStatus === "approved"
+      ? "Projeto aprovado"
+      : reviewStatus === "rejected"
+        ? "Projeto recusado"
+        : "Em análise"
+  const reviewColor =
+    blocked || reviewStatus === "rejected"
+      ? C.danger
+      : reviewStatus === "pending"
+        ? C.warning
+        : C.success
   return (
     <div
       style={{
@@ -4046,7 +4148,7 @@ function SecurityCheckScreen({
       }}
     >
       <Header
-        title="Arquivo enviado"
+        title={blocked ? "Arquivo bloqueado" : "Submissão recebida"}
         onBack={() => navigate("publish")}
       />
       <div
@@ -4064,27 +4166,19 @@ function SecurityCheckScreen({
               width: 72,
               height: 72,
               borderRadius: "50%",
-              background: done
-                ? blocked
-                  ? C.danger + "22"
-                  : C.success + "22"
-                : C.primary + "22",
-              border: `2px solid ${
-                done ? (blocked ? C.danger : C.success) : C.primary
-              }44`,
+              background: `${reviewColor}22`,
+              border: `2px solid ${reviewColor}44`,
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
             }}
           >
-            {done ? (
-              blocked ? (
-                <XCircle size={32} color={C.danger} />
-              ) : (
-                <CheckCircle size={32} color={C.success} />
-              )
+            {blocked || reviewStatus === "rejected" ? (
+              <XCircle size={32} color={reviewColor} />
+            ) : reviewStatus === "pending" ? (
+              <Clock size={32} color={reviewColor} />
             ) : (
-              <CheckCircle size={32} color={C.success} />
+              <CheckCircle size={32} color={reviewColor} />
             )}
           </div>
         </div>
@@ -4154,8 +4248,8 @@ function SecurityCheckScreen({
           <div style={{ marginTop: 28 }}>
             <div
               style={{
-                background: blocked ? C.danger + "11" : C.success + "11",
-                border: `1px solid ${blocked ? C.danger : C.success}33`,
+                background: `${reviewColor}11`,
+                border: `1px solid ${reviewColor}33`,
                 borderRadius: 14,
                 padding: "16px",
                 textAlign: "center",
@@ -4166,16 +4260,20 @@ function SecurityCheckScreen({
                 style={{
                   fontSize: 15,
                   fontWeight: 700,
-                  color: blocked ? C.danger : C.success,
+                  color: reviewColor,
                   marginBottom: 6,
                 }}
               >
-                {blocked ? "Arquivo bloqueado" : "Arquivo armazenado"}
+                {blocked ? "Arquivo bloqueado"                 : reviewLabel}
               </div>
               <div style={{ fontSize: 12, color: C.text2, lineHeight: 1.6 }}>
                 {blocked
                   ? "O upload foi bloqueado."
-                  : "Não foi executada uma análise antivírus. Teste o arquivo somente no sandbox isolado."}
+                  : reviewStatus === "pending"
+                    ? "Seu projeto está aguardando análise. Você receberá uma notificação assim que houver uma decisão. A análise não é uma verificação antivírus."
+                    : reviewStatus === "rejected"
+                      ? "Consulte suas notificações para ver o motivo e as orientações da equipe."
+                      : "O projeto foi aprovado e fica visível conforme as configurações de privacidade do seu perfil. Isso não equivale a uma análise antivírus."}
               </div>
             </div>
             {blocked ? (
@@ -4187,7 +4285,7 @@ function SecurityCheckScreen({
               />
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {project && (
+                {project && reviewStatus === "approved" && (
                   <Btn
                     label="Testar no sandbox"
                     onClick={() => navigate("sandbox", project)}
@@ -4491,7 +4589,22 @@ function MyProjectsScreen({
                   v{p.version}
                 </div>
               </div>
-              <Badge label="Enviado" color={C.primary} />
+              <Badge
+                label={
+                  p.reviewStatus === "pending"
+                    ? "Em análise"
+                    : p.reviewStatus === "rejected"
+                      ? "Recusado"
+                      : "Aprovado"
+                }
+                color={
+                  p.reviewStatus === "pending"
+                    ? C.warning
+                    : p.reviewStatus === "rejected"
+                      ? C.danger
+                      : C.success
+                }
+              />
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <Btn
@@ -4500,7 +4613,7 @@ function MyProjectsScreen({
                 variant="secondary"
                 small
               />
-              {p.fileName && (
+              {p.fileName && p.reviewStatus === "approved" && (
                 <>
                   <Btn
                     label="Testar"
@@ -5032,7 +5145,7 @@ function ProfileEditScreen({ navigate }: { navigate: (s: Screen) => void }) {
           <Input label="Nome" value={form.name} onChange={updateField("name")} />
           <Input label="Nome de usuário" value={form.username} onChange={updateField("username")} />
           <Input label="E-mail" type="email" value={form.email} onChange={updateField("email")} />
-          <div style={{ marginBottom: 20 }}>
+          <div className="form-field" style={{ marginBottom: 20 }}>
             <label style={{ display: "block", fontSize: 12, color: C.text2, marginBottom: 6 }}>Biografia</label>
             <textarea value={form.bio} maxLength={280} onChange={(event) => updateField("bio")(event.target.value)} rows={4} style={{
               width: "100%",
@@ -5054,6 +5167,526 @@ function ProfileEditScreen({ navigate }: { navigate: (s: Screen) => void }) {
       ) : (
         <div style={{ padding: 28, textAlign: "center", color: C.text2 }}>Faça login para editar seu perfil.</div>
       )}
+    </div>
+  )
+}
+
+function SettingSwitch({
+  title,
+  description,
+  checked,
+  disabled = false,
+  onChange,
+}: {
+  title: string
+  description: string
+  checked: boolean
+  disabled?: boolean
+  onChange: () => void
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={title}
+      disabled={disabled}
+      onClick={onChange}
+      className="settings-switch-row"
+    >
+      <span className="settings-switch-copy">
+        <strong>{title}</strong>
+        <span>{description}</span>
+      </span>
+      <span className={`settings-switch${checked ? " is-on" : ""}`}>
+        <span />
+      </span>
+    </button>
+  )
+}
+
+function AppearanceScreen({
+  navigate,
+  onThemeChange,
+}: {
+  navigate: (s: Screen) => void
+  onThemeChange: (theme: AppTheme) => void
+}) {
+  const [settings, setSettings] = useState<AppSettings | null>(null)
+  const [error, setError] = useState("")
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    getAppSettings()
+      .then((value) => {
+        if (!active) return
+        setSettings(value)
+        onThemeChange(value.theme)
+        document.documentElement.dataset.reduceMotion = String(value.reduceMotion)
+      })
+      .catch((reason) => {
+        if (active)
+          setError(reason instanceof Error ? reason.message : "Não foi possível carregar a aparência.")
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const save = async (updates: Partial<AppSettings>) => {
+    setSaving(true)
+    setError("")
+    try {
+      const updated = await updateAppSettings(updates)
+      setSettings(updated)
+      onThemeChange(updated.theme)
+      document.documentElement.dataset.reduceMotion = String(updated.reduceMotion)
+      localStorage.setItem("devio-reduce-motion", String(updated.reduceMotion))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Não foi possível salvar a aparência.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="phone-scroll settings-page">
+      <Header title="Aparência" onBack={() => navigate("settings")} />
+      <div className="settings-page-content">
+        {error && <div role="alert" className="settings-error">{error}</div>}
+        {!settings ? (
+          error ? null : <div className="page-status">Carregando preferências...</div>
+        ) : (
+          <>
+            <section className="settings-section">
+              <h2>Tema</h2>
+              <p>Escolha como o dev.io aparece neste dispositivo e na sua conta.</p>
+              <div className="settings-theme-options">
+                {(["dark", "light"] as const).map((theme) => (
+                  <button
+                    key={theme}
+                    type="button"
+                    aria-pressed={settings.theme === theme}
+                    disabled={saving}
+                    onClick={() => void save({ theme })}
+                    className={`settings-theme-option${settings.theme === theme ? " is-selected" : ""}`}
+                  >
+                    <span className={`settings-theme-preview is-${theme}`} />
+                    {theme === "dark" ? "Escuro" : "Claro"}
+                  </button>
+                ))}
+              </div>
+            </section>
+            <section className="settings-section settings-switch-group">
+              <SettingSwitch
+                title="Reduzir animações"
+                description="Desativa animações de entrada e efeitos de movimento."
+                checked={settings.reduceMotion}
+                disabled={saving}
+                onChange={() => void save({ reduceMotion: !settings.reduceMotion })}
+              />
+            </section>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function PrivacyScreen({ navigate }: { navigate: (s: Screen) => void }) {
+  const [settings, setSettings] = useState<AppSettings | null>(null)
+  const [error, setError] = useState("")
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    getAppSettings()
+      .then((value) => {
+        if (active) setSettings(value)
+      })
+      .catch((reason) => {
+        if (active)
+          setError(reason instanceof Error ? reason.message : "Não foi possível carregar a privacidade.")
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const togglePublic = async () => {
+    if (!settings) return
+    setSaving(true)
+    setError("")
+    try {
+      setSettings(await updateAppSettings({ isPublic: !settings.isPublic }))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Não foi possível salvar a privacidade.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="phone-scroll settings-page">
+      <Header title="Privacidade" onBack={() => navigate("settings")} />
+      <div className="settings-page-content">
+        {error && <div role="alert" className="settings-error">{error}</div>}
+        {!settings ? (
+          error ? null : <div className="page-status">Carregando preferências...</div>
+        ) : (
+          <section className="settings-section settings-switch-group">
+            <SettingSwitch
+              title="Perfil público"
+              description="Quando desativado, seu perfil e seus projetos aprovados deixam de aparecer para outras pessoas. Você ainda poderá vê-los ao entrar na sua conta."
+              checked={settings.isPublic}
+              disabled={saving}
+              onChange={() => void togglePublic()}
+            />
+          </section>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function NotificationsScreen({ navigate }: { navigate: (s: Screen) => void }) {
+  const [settings, setSettings] = useState<AppSettings | null>(null)
+  const [notifications, setNotifications] = useState<AppNotification[]>([])
+  const [unreadCount, setUnreadCount] = useState(0)
+  const [error, setError] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  const refresh = async () => {
+    const [nextSettings, result] = await Promise.all([
+      getAppSettings(),
+      getNotifications(),
+    ])
+    setSettings(nextSettings)
+    setNotifications(result.notifications)
+    setUnreadCount(result.unreadCount)
+  }
+
+  useEffect(() => {
+    let active = true
+    Promise.all([getAppSettings(), getNotifications()])
+      .then(([nextSettings, result]) => {
+        if (!active) return
+        setSettings(nextSettings)
+        setNotifications(result.notifications)
+        setUnreadCount(result.unreadCount)
+      })
+      .catch((reason) => {
+        if (active)
+          setError(reason instanceof Error ? reason.message : "Não foi possível carregar as notificações.")
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const savePreference = async (updates: Partial<AppSettings>) => {
+    setSaving(true)
+    setError("")
+    try {
+      setSettings(await updateAppSettings(updates))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Não foi possível salvar as preferências.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const markAllRead = async () => {
+    setSaving(true)
+    setError("")
+    try {
+      await markAllNotificationsRead()
+      await refresh()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Não foi possível atualizar as notificações.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const openNotification = async (notification: AppNotification) => {
+    if (!notification.readAt) {
+      try {
+        await markNotificationRead(notification.id)
+        setNotifications((current) =>
+          current.map((item) =>
+            item.id === notification.id
+              ? { ...item, readAt: new Date().toISOString() }
+              : item,
+          ),
+        )
+        setUnreadCount((current) => Math.max(0, current - 1))
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "Não foi possível marcar a notificação como lida.")
+        return
+      }
+    }
+    if (notification.projectId) navigate("my-projects")
+  }
+
+  const preferenceRows = settings
+    ? [
+        {
+          title: "Análise de projetos",
+          description: "Quando um projeto enviado for aprovado ou recusado.",
+          checked: settings.notifyReviews,
+          update: { notifyReviews: !settings.notifyReviews },
+        },
+        {
+          title: "Downloads",
+          description: "Quando alguém baixar um dos seus projetos.",
+          checked: settings.notifyDownloads,
+          update: { notifyDownloads: !settings.notifyDownloads },
+        },
+        {
+          title: "Novos seguidores",
+          description: "Quando alguém começar a seguir seu perfil.",
+          checked: settings.notifyFollowers,
+          update: { notifyFollowers: !settings.notifyFollowers },
+        },
+      ]
+    : []
+
+  return (
+    <div className="phone-scroll settings-page">
+      <Header title="Notificações" onBack={() => navigate("settings")} />
+      <div className="settings-page-content">
+        {error && <div role="alert" className="settings-error">{error}</div>}
+        <section className="settings-section">
+          <h2>Preferências</h2>
+          {loading ? (
+            <div className="page-status">Carregando...</div>
+          ) : settings ? (
+            <div className="settings-switch-group">
+              {preferenceRows.map((item) => (
+                <SettingSwitch
+                  key={item.title}
+                  title={item.title}
+                  description={item.description}
+                  checked={item.checked}
+                  disabled={saving}
+                  onChange={() => void savePreference(item.update)}
+                />
+              ))}
+            </div>
+          ) : null}
+        </section>
+        <section className="settings-section">
+          <div className="settings-section-heading">
+            <div>
+              <h2>Atividade recente</h2>
+              <p>{unreadCount ? `${unreadCount} não lida(s)` : "Tudo em dia"}</p>
+            </div>
+            <button
+              type="button"
+              className="settings-text-button"
+              disabled={!unreadCount || saving}
+              onClick={() => void markAllRead()}
+            >
+              Marcar todas como lidas
+            </button>
+          </div>
+          {loading ? (
+            <div className="page-status">Carregando notificações...</div>
+          ) : notifications.length ? (
+            <div className="notification-list">
+              {notifications.map((notification) => (
+                <button
+                  key={notification.id}
+                  type="button"
+                  className={`notification-item${notification.readAt ? "" : " is-unread"}`}
+                  onClick={() => void openNotification(notification)}
+                >
+                  <span className="notification-item-icon">
+                    {notification.kind === "new_follower" ? (
+                      <UserPlus size={18} />
+                    ) : notification.kind === "project_download" ? (
+                      <Download size={18} />
+                    ) : notification.kind === "project_approved" ? (
+                      <CheckCircle size={18} />
+                    ) : (
+                      <XCircle size={18} />
+                    )}
+                  </span>
+                  <span className="notification-item-copy">
+                    <strong>{notification.title}</strong>
+                    <span>{notification.message}</span>
+                    <time dateTime={notification.createdAt}>
+                      {new Date(notification.createdAt).toLocaleString("pt-BR")}
+                    </time>
+                  </span>
+                  {!notification.readAt && <span className="notification-unread-dot" />}
+                </button>
+              ))}
+            </div>
+          ) : error ? null : (
+            <div className="settings-empty">As novas atividades aparecerão aqui.</div>
+          )}
+        </section>
+      </div>
+    </div>
+  )
+}
+
+function PaymentAccountScreen({ navigate }: { navigate: (s: Screen) => void }) {
+  const [account, setAccount] = useState<{
+    configured: boolean
+    connected: boolean
+    collectorId: string | null
+  } | null>(null)
+  const [error, setError] = useState("")
+  const [loading, setLoading] = useState(false)
+  const [message] = useState(() => {
+    const result = new URLSearchParams(window.location.search).get("mp_connected")
+    return result === "success"
+      ? "Conta Mercado Pago conectada."
+      : result === "error"
+        ? "Não foi possível conectar a conta. Tente novamente."
+        : ""
+  })
+
+  useEffect(() => {
+    let active = true
+    getPaymentAccount()
+      .then((result) => {
+        if (active) setAccount(result)
+      })
+      .catch((reason) => {
+        if (active)
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "Não foi possível consultar a conta de recebimento.",
+          )
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const connect = async () => {
+    setLoading(true)
+    setError("")
+    try {
+      const { authorizationUrl } = await connectPaymentAccount()
+      window.location.assign(authorizationUrl)
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível iniciar a conexão.",
+      )
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="phone-scroll settings-page">
+      <Header title="Recebimentos" onBack={() => navigate("settings")} />
+      <div className="settings-page-content">
+        {message && <div className="settings-success">{message}</div>}
+        {error && <div role="alert" className="settings-error">{error}</div>}
+        {!account ? (
+          error ? null : <div className="page-status">Verificando conexão...</div>
+        ) : (
+          <section className="settings-section">
+            <h2>Conta Mercado Pago</h2>
+            <p>
+              Conecte sua própria conta de vendedor. Os pagamentos dos seus
+              projetos serão cobrados em seu nome e recebidos diretamente na
+              sua conta Mercado Pago, sem passar pelo saldo da plataforma.
+            </p>
+            {account.connected ? (
+              <div className="payment-account-status">
+                <CheckCircle size={18} />
+                <span>Conectada · conta {account.collectorId}</span>
+              </div>
+            ) : (
+              <div className="settings-error">
+                Conecte a conta para poder receber pagamentos e doações.
+              </div>
+            )}
+            {!account.configured && (
+              <div role="alert" className="settings-error">
+                A integração de contas ainda não foi configurada pelo operador
+                do dev.io.
+              </div>
+            )}
+            <div style={{ marginTop: 16 }}>
+              <Btn
+                label={
+                  loading
+                    ? "Abrindo Mercado Pago..."
+                    : account.connected
+                      ? "Reconectar conta"
+                      : "Conectar Mercado Pago"
+                }
+                onClick={connect}
+                disabled={loading || !account.configured}
+                full
+              />
+            </div>
+            <p style={{ marginTop: 14 }}>
+              A autorização é feita no site do Mercado Pago. O dev.io não vê nem
+              armazena sua senha; os tokens de integração ficam criptografados
+              no servidor.
+            </p>
+          </section>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function LegalScreen({
+  navigate,
+  policy,
+}: {
+  navigate: (s: Screen) => void
+  policy: boolean
+}) {
+  const sections = policy
+    ? [
+        ["Dados tratados", "O dev.io utiliza os dados de conta e perfil fornecidos por você, os projetos e arquivos enviados, as relações de seguidores, os registros de atividade necessários às notificações e dados técnicos básicos para manter o serviço."],
+        ["Uso e compartilhamento", "Os dados são usados para autenticação, exibição de perfis e projetos públicos, biblioteca, moderação e funcionamento do serviço. Informações públicas podem ser vistas por outras pessoas. Arquivos de projetos ficam em armazenamento privado e são disponibilizados por links temporários conforme as permissões do projeto."],
+        ["Pagamentos", "O checkout é processado pelo Mercado Pago na conta conectada pelo publicador. O dev.io registra identificadores, valores e status necessários para confirmar pedidos; os dados de cartão são informados diretamente ao provedor e não são armazenados pelo dev.io. O tratamento dos dados pelo provedor também está sujeito à política própria dele."],
+        ["Notificações e controles", "Você pode desativar categorias de notificações e tornar seu perfil privado em Configurações. Isso não apaga informações que precisem ser mantidas para segurança, obrigações legais ou funcionamento de transações."],
+        ["Retenção e exclusão", "Os dados são mantidos enquanto a conta e os projetos estiverem ativos. A exclusão da conta remove o perfil e os registros associados conforme as regras do serviço; cópias técnicas podem persistir temporariamente em backups."],
+        ["Contato e atualizações", "Esta política pode ser atualizada quando o serviço mudar. Consulte esta tela para ver a versão vigente e use o canal de suporte disponibilizado pelo operador do dev.io para dúvidas ou solicitações sobre seus dados."],
+      ]
+    : [
+        ["Conta e responsabilidade", "Mantenha suas credenciais seguras e forneça informações corretas. Você é responsável pelas ações realizadas na sua conta e pelos arquivos e informações que publica."],
+        ["Conteúdo publicado", "Publique apenas conteúdo que você criou ou tem autorização para compartilhar. Não envie material ilegal, malicioso, enganoso ou que viole direitos de terceiros. Você mantém seus direitos sobre o conteúdo e autoriza o dev.io a armazená-lo e exibi-lo conforme as funções escolhidas por você."],
+        ["Análise e moderação", "Projetos enviados podem ficar em análise antes de aparecer publicamente. A equipe pode aprovar, recusar, bloquear ou remover conteúdo que viole estas regras ou comprometa o serviço. A decisão de análise será informada nas notificações da conta."],
+        ["Sandbox e arquivos", "O sandbox executa apenas formatos compatíveis em isolamento no navegador. Isso não equivale a uma análise antivírus nem garante que um arquivo seja seguro. Não execute arquivos desconhecidos fora do ambiente isolado."],
+        ["Pagamentos e disponibilidade", "Pagamentos e doações são processados pelo Mercado Pago diretamente na conta conectada pelo publicador e só são considerados confirmados após validação do provedor. Confira o recebedor, o preço e as condições no checkout antes de pagar. O serviço pode ser alterado para manutenção ou segurança."],
+      ]
+
+  return (
+    <div className="phone-scroll settings-page">
+      <Header
+        title={policy ? "Política de privacidade" : "Termos de uso"}
+        onBack={() => navigate("settings")}
+      />
+      <article className="legal-document">
+        <p className="legal-updated">Informações do serviço · Atualizado em 22/11/2026</p>
+        {sections.map(([title, body]) => (
+          <section key={title}>
+            <h2>{title}</h2>
+            <p>{body}</p>
+          </section>
+        ))}
+      </article>
     </div>
   )
 }
@@ -5100,29 +5733,30 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
     {
       title: "Conta",
       items: [
-        { icon: User, label: "Informações pessoais" },
-        { icon: Lock, label: "Segurança e senha" },
+        { icon: User, label: "Informações pessoais", target: "profile-edit" as const },
+        { icon: Lock, label: "Segurança e senha", target: "password-change" as const },
       ],
     },
     {
       title: "Preferências",
       items: [
-        { icon: BellIcon, label: "Notificações" },
-        { icon: Moon, label: "Aparência" },
-        { icon: Globe, label: "Privacidade" },
+        { icon: BellIcon, label: "Notificações", target: "notifications" as const },
+        { icon: Moon, label: "Aparência", target: "appearance" as const },
+        { icon: Globe, label: "Privacidade", target: "privacy" as const },
+        { icon: CreditCard, label: "Recebimentos", target: "payment-account" as const },
       ],
     },
     {
       title: "Legal",
       items: [
-        { icon: FileText, label: "Termos de uso" },
-        { icon: Shield, label: "Política de privacidade" },
+        { icon: FileText, label: "Termos de uso", target: "terms" as const },
+        { icon: Shield, label: "Política de privacidade", target: "privacy-policy" as const },
       ],
     },
   ]
   return (
     <div
-      className="phone-scroll"
+      className="phone-scroll settings-page"
       style={{
         width: "100%",
         height: "100%",
@@ -5132,7 +5766,7 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
       }}
     >
       <Header title="Configurações" onBack={() => navigate("profile")} />
-      <div style={{ padding: "16px 20px 24px" }}>
+      <div className="settings-page-content">
         {logoutError && <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>{logoutError}</div>}
         {adminCheckError && <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>{adminCheckError}</div>}
         {groups.map((g) => (
@@ -5159,30 +5793,31 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
               }}
             >
               {g.items.map((item, i) => (
-                <div
+                <button
+                  type="button"
                   key={item.label}
+                  className="settings-link-row"
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: 14,
                     padding: "14px 16px",
+                    width: "100%",
+                    background: "transparent",
+                    border: "none",
                     borderBottom:
                       i < g.items.length - 1 ? `1px solid ${C.border}` : "none",
                     cursor: "pointer",
+                    textAlign: "left",
                   }}
-                  onClick={() =>
-                    item.label === "Informações pessoais"
-                      ? navigate("profile-edit")
-                      : item.label === "Segurança e senha" &&
-                        navigate("password-change")
-                  }
+                  onClick={() => navigate(item.target)}
                 >
                   <item.icon size={18} color={C.text2} />
                   <span style={{ flex: 1, fontSize: 14, color: C.text }}>
                     {item.label}
                   </span>
                   <ChevronRight size={14} color={C.text3} />
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -5255,6 +5890,9 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
 
 function AdminScreen({ navigate }: { navigate: (s: Screen) => void }) {
   const [tab, setTab] = useState<"users" | "projects">("users")
+  const [reviewFilter, setReviewFilter] = useState<
+    "pending" | "approved" | "rejected" | "all"
+  >("pending")
   const [users, setUsers] = useState<AdminUser[]>([])
   const [projects, setProjects] = useState<AdminProject[]>([])
   const [usersHasMore, setUsersHasMore] = useState(false)
@@ -5271,7 +5909,9 @@ function AdminScreen({ navigate }: { navigate: (s: Screen) => void }) {
     setLoading(true)
     setError("")
     const request =
-      tab === "users" ? getAdminUsers(userPage) : getAdminProjects(projectPage)
+      tab === "users"
+        ? getAdminUsers(userPage)
+        : getAdminProjects(projectPage, reviewFilter)
     request
       .then((response) => {
         if (!active) return
@@ -5297,7 +5937,7 @@ function AdminScreen({ navigate }: { navigate: (s: Screen) => void }) {
     return () => {
       active = false
     }
-  }, [tab, userPage, projectPage, refreshKey])
+  }, [tab, userPage, projectPage, reviewFilter, refreshKey])
 
   const toggleBlock = async (user: AdminUser) => {
     const action = user.blocked ? "desbloquear" : "bloquear"
@@ -5383,6 +6023,34 @@ function AdminScreen({ navigate }: { navigate: (s: Screen) => void }) {
     }
   }
 
+  const reviewProject = async (
+    project: AdminProject,
+    status: "approved" | "rejected",
+  ) => {
+    const note =
+      status === "rejected"
+        ? window.prompt("Informe o motivo da recusa (opcional):")
+        : ""
+    if (status === "rejected" && note === null) return
+    const action = status === "approved" ? "aprovar" : "recusar"
+    if (!window.confirm(`Deseja ${action} o projeto “${project.name}”?`)) return
+
+    setBusyId(project.id)
+    setError("")
+    try {
+      await setAdminProjectReview(project.id, status, note || "")
+      setRefreshKey((key) => key + 1)
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível registrar a decisão de análise.",
+      )
+    } finally {
+      setBusyId("")
+    }
+  }
+
   const page = tab === "users" ? userPage : projectPage
   const hasMore = tab === "users" ? usersHasMore : projectsHasMore
   const changePage = (direction: -1 | 1) => {
@@ -5429,6 +6097,30 @@ function AdminScreen({ navigate }: { navigate: (s: Screen) => void }) {
           })}
         </div>
 
+        {tab === "projects" && (
+          <label className="admin-review-filter">
+            <span>Filtrar submissões</span>
+            <select
+              value={reviewFilter}
+              onChange={(event) => {
+                setReviewFilter(
+                  event.target.value as
+                    | "pending"
+                    | "approved"
+                    | "rejected"
+                    | "all",
+                )
+                setProjectPage(1)
+              }}
+            >
+              <option value="pending">Aguardando análise</option>
+              <option value="approved">Aprovadas</option>
+              <option value="rejected">Recusadas</option>
+              <option value="all">Todas</option>
+            </select>
+          </label>
+        )}
+
         {error && (
           <div
             role="alert"
@@ -5443,7 +6135,7 @@ function AdminScreen({ navigate }: { navigate: (s: Screen) => void }) {
           </div>
         ) : tab === "users" ? (
           users.length ? (
-            <div style={{ display: "grid", gap: 12 }}>
+            <div className="admin-list" style={{ display: "grid", gap: 12 }}>
               {users.map((user) => (
                 <div
                   key={user.id}
@@ -5563,7 +6255,7 @@ function AdminScreen({ navigate }: { navigate: (s: Screen) => void }) {
             </div>
           )
         ) : projects.length ? (
-          <div style={{ display: "grid", gap: 12 }}>
+          <div className="admin-list" style={{ display: "grid", gap: 12 }}>
             {projects.map((project) => (
               <div
                 key={project.id}
@@ -5593,12 +6285,48 @@ function AdminScreen({ navigate }: { navigate: (s: Screen) => void }) {
                     {project.ownerName} · {project.category}
                     {project.blocked ? " · BLOQUEADA" : ""}
                   </div>
+                  <div
+                    className={`review-status is-${project.reviewStatus}`}
+                    style={{ marginTop: 8 }}
+                  >
+                    {project.reviewStatus === "pending"
+                      ? "Aguardando análise"
+                      : project.reviewStatus === "approved"
+                        ? "Aprovado"
+                        : "Recusado"}
+                  </div>
                   <div style={{ color: C.text3, fontSize: 11, marginTop: 4 }}>
                     {project.fileName} ·{" "}
                     {new Date(project.createdAt).toLocaleDateString("pt-BR")}
                   </div>
                 </div>
-                <div style={{ display: "flex", flexShrink: 0, gap: 7 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    flexShrink: 0,
+                    flexWrap: "wrap",
+                    justifyContent: "flex-end",
+                    gap: 7,
+                  }}
+                >
+                  {project.reviewStatus === "pending" && (
+                    <>
+                      <button
+                        onClick={() => void reviewProject(project, "approved")}
+                        disabled={Boolean(busyId)}
+                        className="review-action is-approve"
+                      >
+                        Aprovar
+                      </button>
+                      <button
+                        onClick={() => void reviewProject(project, "rejected")}
+                        disabled={Boolean(busyId)}
+                        className="review-action is-reject"
+                      >
+                        Recusar
+                      </button>
+                    </>
+                  )}
                   <button
                     onClick={() => toggleProjectBlock(project)}
                     disabled={Boolean(busyId)}
@@ -5835,7 +6563,7 @@ function ReportScreen({ navigate }: { navigate: (s: Screen) => void }) {
           ))}
         </div>
 
-        <div style={{ marginBottom: 24 }}>
+        <div className="form-field" style={{ marginBottom: 24 }}>
           <div
             style={{
               fontSize: 12,
@@ -5993,6 +6721,8 @@ export default function App() {
       return "password-reset"
     if (searchParams.has("profile")) return "public-profile"
     if (searchParams.has("project")) return "shared-project"
+    if (searchParams.has("payment")) return "payment-result"
+    if (searchParams.has("mp_connected")) return "payment-account"
     return "splash"
   })
   const [history, setHistory] = useState<Screen[]>([])
@@ -6000,12 +6730,22 @@ export default function App() {
   const [publicProfileUsername, setPublicProfileUsername] = useState(
     () => new URLSearchParams(window.location.search).get("profile") || "",
   )
+  const [paymentOrderId] = useState(
+    () => new URLSearchParams(window.location.search).get("order_id") || "",
+  )
   const [sharedProjectLoading, setSharedProjectLoading] = useState(
     () => new URLSearchParams(window.location.search).has("project"),
   )
   const [sharedProjectError, setSharedProjectError] = useState("")
   const [authLoaded, setAuthLoaded] = useState(false)
   const [authError, setAuthError] = useState("")
+  const [, setThemeVersion] = useState(initialTheme)
+
+  const changeTheme = (nextTheme: AppTheme) => {
+    applyTheme(nextTheme)
+    localStorage.setItem("devio-theme", nextTheme)
+    setThemeVersion(nextTheme)
+  }
 
   useEffect(() => {
     const projectId = new URLSearchParams(window.location.search).get("project")
@@ -6084,6 +6824,7 @@ export default function App() {
     "publish",
     "library",
     "profile",
+    "notifications",
   ]
 
   const renderScreen = () => {
@@ -6136,6 +6877,10 @@ export default function App() {
         ) : (
           <HomeScreen navigate={navigate} />
         )
+      case "payment-result":
+        return <PaymentResultScreen orderId={paymentOrderId} navigate={navigate} />
+      case "payment-account":
+        return <PaymentAccountScreen navigate={navigate} />
       case "library":
         return <LibraryScreen navigate={navigate} />
       case "publish":
@@ -6186,6 +6931,18 @@ export default function App() {
         return <ProfileEditScreen navigate={navigate} />
       case "settings":
         return <SettingsScreen navigate={navigate} />
+      case "notifications":
+        return <NotificationsScreen navigate={navigate} />
+      case "appearance":
+        return (
+          <AppearanceScreen navigate={navigate} onThemeChange={changeTheme} />
+        )
+      case "privacy":
+        return <PrivacyScreen navigate={navigate} />
+      case "terms":
+        return <LegalScreen navigate={navigate} policy={false} />
+      case "privacy-policy":
+        return <LegalScreen navigate={navigate} policy />
       case "admin":
         return <AdminScreen navigate={navigate} />
       case "report":

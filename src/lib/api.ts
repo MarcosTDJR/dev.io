@@ -22,6 +22,29 @@ export type ProfileStats = {
   followingCount: number
 }
 
+export type AppSettings = {
+  isPublic: boolean
+  theme: "dark" | "light"
+  reduceMotion: boolean
+  notifyReviews: boolean
+  notifyDownloads: boolean
+  notifyFollowers: boolean
+}
+
+export type AppNotification = {
+  id: string
+  kind:
+    | "new_follower"
+    | "project_download"
+    | "project_approved"
+    | "project_rejected"
+  title: string
+  message: string
+  createdAt: string
+  readAt: string | null
+  projectId: string | null
+}
+
 export type PublicProfile = {
   id: string
   username: string
@@ -55,6 +78,7 @@ export type AdminProject = {
   fileName: string
   createdAt: string
   blocked: boolean
+  reviewStatus: "pending" | "approved" | "rejected"
 }
 
 export type ApiProject = {
@@ -70,6 +94,7 @@ export type ApiProject = {
   fileType?: string
   sandboxType?: string
   acceptDonations: boolean
+  reviewStatus?: "pending" | "approved" | "rejected"
 }
 
 type ProjectRow = {
@@ -86,6 +111,7 @@ type ProjectRow = {
   file_type: string | null
   sandbox_type: string | null
   accept_donations?: boolean
+  review_status?: "pending" | "approved" | "rejected"
   created_at: string
   profiles?: { username: string } | { username: string }[] | null
 }
@@ -123,6 +149,7 @@ function mapProject(row: ProjectRow): ApiProject {
     fileType: row.file_type || undefined,
     sandboxType: row.sandbox_type || undefined,
     acceptDonations: Boolean(row.accept_donations),
+    reviewStatus: row.review_status || "approved",
   }
 }
 
@@ -175,9 +202,12 @@ export function getAdminUsers(page: number) {
   )
 }
 
-export function getAdminProjects(page: number) {
+export function getAdminProjects(
+  page: number,
+  reviewStatus: "pending" | "approved" | "rejected" | "all" = "pending",
+) {
   return adminRequest<{ projects: AdminProject[]; hasMore: boolean }>(
-    `/projects?page=${encodeURIComponent(String(page))}`,
+    `/projects?page=${encodeURIComponent(String(page))}&status=${encodeURIComponent(reviewStatus)}`,
   )
 }
 
@@ -211,6 +241,20 @@ export function setAdminProjectBlocked(projectId: string, blocked: boolean) {
     {
       method: "PATCH",
       body: JSON.stringify({ blocked }),
+    },
+  )
+}
+
+export function setAdminProjectReview(
+  projectId: string,
+  status: "approved" | "rejected",
+  note = "",
+) {
+  return adminRequest<{ ok: boolean; reviewStatus: "approved" | "rejected" }>(
+    `/projects/${encodeURIComponent(projectId)}/review`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ status, note }),
     },
   )
 }
@@ -258,6 +302,116 @@ export async function hasActiveSession() {
   const { data, error } = await supabase.auth.getSession()
   throwIfError(error)
   return Boolean(data.session)
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  const user = await getAuthenticatedUser()
+  const { data, error } = await supabase
+    .from("profile_settings")
+    .select(
+      "is_public, theme, reduce_motion, notify_reviews, notify_downloads, notify_followers",
+    )
+    .eq("user_id", user.id)
+    .single()
+  throwIfError(error)
+  if (!data) throw new Error("As configurações da conta não foram encontradas.")
+  return {
+    isPublic: data.is_public,
+    theme: data.theme,
+    reduceMotion: data.reduce_motion,
+    notifyReviews: data.notify_reviews,
+    notifyDownloads: data.notify_downloads,
+    notifyFollowers: data.notify_followers,
+  }
+}
+
+export async function updateAppSettings(
+  updates: Partial<AppSettings>,
+): Promise<AppSettings> {
+  const user = await getAuthenticatedUser()
+  const payload: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+  }
+  if (updates.isPublic !== undefined) payload.is_public = updates.isPublic
+  if (updates.theme !== undefined) payload.theme = updates.theme
+  if (updates.reduceMotion !== undefined)
+    payload.reduce_motion = updates.reduceMotion
+  if (updates.notifyReviews !== undefined)
+    payload.notify_reviews = updates.notifyReviews
+  if (updates.notifyDownloads !== undefined)
+    payload.notify_downloads = updates.notifyDownloads
+  if (updates.notifyFollowers !== undefined)
+    payload.notify_followers = updates.notifyFollowers
+
+  const { data, error } = await supabase
+    .from("profile_settings")
+    .update(payload)
+    .eq("user_id", user.id)
+    .select(
+      "is_public, theme, reduce_motion, notify_reviews, notify_downloads, notify_followers",
+    )
+    .single()
+  throwIfError(error)
+  if (!data) throw new Error("Não foi possível salvar as configurações da conta.")
+  return {
+    isPublic: data.is_public,
+    theme: data.theme,
+    reduceMotion: data.reduce_motion,
+    notifyReviews: data.notify_reviews,
+    notifyDownloads: data.notify_downloads,
+    notifyFollowers: data.notify_followers,
+  }
+}
+
+export async function getNotifications() {
+  await getAuthenticatedUser()
+  const [
+    { data: notifications, error },
+    { count: unreadCount, error: countError },
+  ] = await Promise.all([
+    supabase
+      .from("notifications")
+      .select("id, kind, title, message, created_at, read_at, project_id")
+      .order("created_at", { ascending: false })
+      .limit(50),
+    supabase
+      .from("notifications")
+      .select("id", { count: "exact", head: true })
+      .is("read_at", null),
+  ])
+  throwIfError(error)
+  throwIfError(countError)
+  return {
+    notifications: (notifications || []).map((item) => ({
+      id: item.id,
+      kind: item.kind as AppNotification["kind"],
+      title: item.title,
+      message: item.message,
+      createdAt: item.created_at,
+      readAt: item.read_at,
+      projectId: item.project_id,
+    })),
+    unreadCount: unreadCount || 0,
+  }
+}
+
+export async function markNotificationRead(notificationId: string) {
+  await getAuthenticatedUser()
+  const { error } = await supabase
+    .from("notifications")
+    .update({ read_at: new Date().toISOString() })
+    .eq("id", notificationId)
+    .is("read_at", null)
+  throwIfError(error)
+}
+
+export async function markAllNotificationsRead() {
+  await getAuthenticatedUser()
+  const { error } = await supabase
+    .from("notifications")
+    .update({ read_at: new Date().toISOString() })
+    .is("read_at", null)
+  throwIfError(error)
 }
 
 export async function registerAccount(payload: {
@@ -538,6 +692,66 @@ export async function logoutAccount() {
   throwIfError(error)
 }
 
+export type PaymentOrder = {
+  id: string
+  kind: "purchase" | "donation"
+  amount: number
+  status: "pending" | "in_process" | "approved" | "rejected" | "cancelled" | "refunded"
+  project_id: string
+}
+
+export type PaymentAccountStatus = {
+  configured: boolean
+  connected: boolean
+  collectorId: string | null
+}
+
+async function paymentRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const { data, error } = await supabase.auth.getSession()
+  throwIfError(error)
+  const token = data.session?.access_token
+  if (!token) throw new Error("Faça login para continuar.")
+  const headers = new Headers(init.headers)
+  headers.set("Authorization", `Bearer ${token}`)
+  if (init.body) headers.set("Content-Type", "application/json")
+  const response = await fetch(`${apiBaseUrl()}/api/payments${path}`, {
+    ...init,
+    headers,
+  })
+  const result = (await response.json()) as T & { error?: string }
+  if (!response.ok)
+    throw new Error(result.error || "Não foi possível concluir o pagamento.")
+  return result
+}
+
+export function getPaymentAccount() {
+  return paymentRequest<PaymentAccountStatus>("/account")
+}
+
+export function connectPaymentAccount() {
+  return paymentRequest<{ authorizationUrl: string }>("/account/connect", {
+    method: "POST",
+    body: JSON.stringify({}),
+  })
+}
+
+export function createPaymentCheckout(input: {
+  projectId: string
+  kind: "purchase" | "donation"
+  amount?: number
+}) {
+  return paymentRequest<{ checkoutUrl: string; orderId: string }>("/checkout", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+}
+
+export function getPaymentOrder(orderId: string) {
+  return paymentRequest<{ order: PaymentOrder }>(
+    `/orders/${encodeURIComponent(orderId)}`,
+  )
+}
+
 export async function downloadProject(projectId: string) {
   const { data, error } = await supabase
     .from("projects")
@@ -551,13 +765,24 @@ export async function downloadProject(projectId: string) {
     .createSignedUrl(project.file_path, 120, { download: project.file_name })
   throwIfError(storageError)
   if (!signedUrl) throw new Error("Não foi possível preparar o download.")
+  await getAuthenticatedUser()
+  const { error: downloadError } = await supabase.rpc(
+    "record_project_download",
+    { target_project_id: projectId },
+  )
+  throwIfError(downloadError)
   window.location.assign(signedUrl.signedUrl)
 }
 
 export async function getProjectFile(projectId: string) {
   const apiUrl = apiBaseUrl()
+  const { data } = await supabase.auth.getSession()
+  const headers = new Headers()
+  if (data.session?.access_token)
+    headers.set("Authorization", `Bearer ${data.session.access_token}`)
   const response = await fetch(
     `${apiUrl || ""}/api/projects/${encodeURIComponent(projectId)}/sandbox`,
+    { headers },
   )
   if (!response.headers.get("content-type")?.includes("application/json")) {
     if (response.status === 404) {
