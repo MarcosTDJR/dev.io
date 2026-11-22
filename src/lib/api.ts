@@ -6,6 +6,8 @@ export type ApiUser = {
   username: string
   email: string
   emailVerified: boolean
+  isAdmin: boolean
+  isBlocked: boolean
 }
 
 export type ProfileUser = ApiUser & {
@@ -16,6 +18,28 @@ export type ProfileUser = ApiUser & {
 export type ProfileStats = {
   projectCount: number
   savedProjectCount: number
+}
+
+export type AdminUser = {
+  id: string
+  name: string
+  username: string
+  email: string
+  createdAt: string
+  blocked: boolean
+  isAdmin: boolean
+}
+
+export type AdminProject = {
+  id: string
+  name: string
+  ownerId: string
+  ownerName: string
+  category: string
+  version: string
+  fileName: string
+  createdAt: string
+  blocked: boolean
 }
 
 export type ApiProject = {
@@ -83,15 +107,87 @@ function mapUser(user: {
   email?: string
   email_confirmed_at?: string | null
   user_metadata?: Record<string, unknown>
+  app_metadata?: Record<string, unknown>
 }): ApiUser {
   const metadata = user.user_metadata || {}
+  const appMetadata = user.app_metadata || {}
   return {
     id: user.id,
     name: typeof metadata.display_name === "string" ? metadata.display_name : "",
     username: typeof metadata.username === "string" ? metadata.username : "",
     email: user.email || "",
     emailVerified: Boolean(user.email_confirmed_at),
+    isAdmin: appMetadata.role === "admin",
+    isBlocked: appMetadata.blocked === true,
   }
+}
+
+async function adminRequest<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const { data, error } = await supabase.auth.getSession()
+  throwIfError(error)
+  const accessToken = data.session?.access_token
+  if (!accessToken) throw new Error("Faça login para continuar.")
+
+  const headers = new Headers(init.headers)
+  headers.set("Authorization", `Bearer ${accessToken}`)
+  if (init.body) headers.set("Content-Type", "application/json")
+  const response = await fetch(`/api/admin${path}`, {
+    ...init,
+    headers,
+  })
+  const result = (await response.json()) as T & { error?: string }
+  if (!response.ok)
+    throw new Error(result.error || "Não foi possível concluir a ação administrativa.")
+  return result
+}
+
+export function getAdminUsers(page: number) {
+  return adminRequest<{ users: AdminUser[]; hasMore: boolean }>(
+    `/users?page=${encodeURIComponent(String(page))}`,
+  )
+}
+
+export function getAdminProjects(page: number) {
+  return adminRequest<{ projects: AdminProject[]; hasMore: boolean }>(
+    `/projects?page=${encodeURIComponent(String(page))}`,
+  )
+}
+
+export function setAdminUserBlocked(userId: string, blocked: boolean) {
+  return adminRequest<{ ok: boolean; blocked: boolean }>(
+    `/users/${encodeURIComponent(userId)}/block`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ blocked }),
+    },
+  )
+}
+
+export function deleteAdminUser(userId: string) {
+  return adminRequest<{ ok: boolean }>(
+    `/users/${encodeURIComponent(userId)}`,
+    { method: "DELETE" },
+  )
+}
+
+export function deleteAdminProject(projectId: string) {
+  return adminRequest<{ ok: boolean }>(
+    `/projects/${encodeURIComponent(projectId)}`,
+    { method: "DELETE" },
+  )
+}
+
+export function setAdminProjectBlocked(projectId: string, blocked: boolean) {
+  return adminRequest<{ ok: boolean; blocked: boolean }>(
+    `/projects/${encodeURIComponent(projectId)}/block`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ blocked }),
+    },
+  )
 }
 
 async function getProfileRow(userId: string) {
@@ -153,7 +249,7 @@ export async function registerAccount(payload: {
         display_name: payload.name.trim(),
         username: payload.username.trim().replace(/^@/, "").toLowerCase(),
       },
-      emailRedirectTo: `${window.location.origin}/#confirmEmail`,
+      emailRedirectTo: `${window.location.origin}/?confirmEmail=1`,
     },
   })
   throwIfError(error)
@@ -386,7 +482,7 @@ export async function resendConfirmation(
   const { error } = await supabase.auth.resend({
     type: emailChange ? "email_change" : "signup",
     email: email.trim().toLowerCase(),
-    options: { emailRedirectTo: `${window.location.origin}/#confirmEmail` },
+    options: { emailRedirectTo: `${window.location.origin}/?confirmEmail=1` },
   })
   throwIfError(error)
   return { ok: true, emailSent: true }
@@ -395,7 +491,7 @@ export async function resendConfirmation(
 export async function requestPasswordReset(email: string) {
   const { error } = await supabase.auth.resetPasswordForEmail(
     email.trim().toLowerCase(),
-    { redirectTo: `${window.location.origin}/#resetPassword` },
+    { redirectTo: `${window.location.origin}/?resetPassword=1` },
   )
   throwIfError(error)
   return { ok: true, emailSent: true }

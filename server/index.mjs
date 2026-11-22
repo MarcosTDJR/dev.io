@@ -8,12 +8,26 @@ import { DatabaseSync } from "node:sqlite"
 import express from "express"
 import multer from "multer"
 import nodemailer from "nodemailer"
+import { createClient } from "@supabase/supabase-js"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const dataDirectory = process.env.DEVIO_DATA_DIR || path.join(root, "data")
 const storageDirectory =
   process.env.DEVIO_STORAGE_DIR || path.join(root, "storage", "projects")
 const avatarDirectory = path.join(storageDirectory, "avatars")
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
+const supabaseSecret =
+  process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
+const adminSupabase =
+  supabaseUrl && supabaseSecret
+    ? createClient(supabaseUrl, supabaseSecret, {
+        auth: {
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+          persistSession: false,
+        },
+      })
+    : null
 fs.mkdirSync(dataDirectory, { recursive: true })
 fs.mkdirSync(storageDirectory, { recursive: true })
 
@@ -222,6 +236,26 @@ function requireUser(req, res, next) {
   next()
 }
 
+async function requireAdmin(req, res, next) {
+  if (!adminSupabase) {
+    return res.status(503).json({
+      error: "A administração não está configurada no servidor.",
+    })
+  }
+  const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1]
+  if (!token)
+    return res.status(401).json({ error: "Faça login para continuar." })
+
+  const { data, error } = await adminSupabase.auth.getUser(token)
+  if (error || !data.user)
+    return res.status(401).json({ error: "Sessão inválida ou expirada." })
+  if (data.user.app_metadata?.role !== "admin")
+    return res.status(403).json({ error: "Acesso restrito a administradores." })
+
+  req.adminUser = data.user
+  next()
+}
+
 function publicProject(row) {
   return {
     id: row.id,
@@ -338,8 +372,11 @@ app.use((req, res, next) => {
     process.env.WEB_ORIGIN || "http://localhost:8443",
   )
   res.setHeader("Access-Control-Allow-Credentials", "true")
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type")
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type")
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+  )
   if (req.method === "OPTIONS") return res.sendStatus(204)
   next()
 })
@@ -370,6 +407,254 @@ const avatarUpload = multer({
 })
 
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }))
+
+const adminPageSize = 30
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function adminPage(value) {
+  const parsed = Number.parseInt(String(value || "1"), 10)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1
+}
+
+async function removeStorageFiles(bucket, files) {
+  const paths = [...new Set(files.filter(Boolean))]
+  for (let offset = 0; offset < paths.length; offset += 100) {
+    const { error } = await adminSupabase.storage
+      .from(bucket)
+      .remove(paths.slice(offset, offset + 100))
+    if (error) return error
+  }
+  return null
+}
+
+app.get("/api/admin/users", requireAdmin, async (req, res) => {
+  const page = adminPage(req.query.page)
+  const { data, error } = await adminSupabase.auth.admin.listUsers({
+    page,
+    perPage: adminPageSize,
+  })
+  if (error)
+    return res.status(502).json({ error: "Não foi possível carregar usuários." })
+
+  const authUsers = data.users || []
+  const userIds = authUsers.map((user) => user.id)
+  const { data: profiles, error: profilesError } = userIds.length
+    ? await adminSupabase
+        .from("profiles")
+        .select("id, username, display_name, is_blocked")
+        .in("id", userIds)
+    : { data: [], error: null }
+  if (profilesError)
+    return res.status(502).json({ error: "Não foi possível carregar perfis." })
+
+  const profilesById = new Map((profiles || []).map((profile) => [profile.id, profile]))
+  return res.json({
+    users: authUsers.map((user) => {
+      const profile = profilesById.get(user.id)
+      const banned = user.banned_until && Date.parse(user.banned_until) > Date.now()
+      return {
+        id: user.id,
+        email: user.email || "",
+        name: profile?.display_name || user.user_metadata?.display_name || "",
+        username: profile?.username || user.user_metadata?.username || "",
+        createdAt: user.created_at,
+        blocked: Boolean(profile?.is_blocked || user.app_metadata?.blocked || banned),
+        isAdmin: user.app_metadata?.role === "admin",
+      }
+    }),
+    hasMore: authUsers.length === adminPageSize,
+  })
+})
+
+app.get("/api/admin/projects", requireAdmin, async (req, res) => {
+  const page = adminPage(req.query.page)
+  const offset = (page - 1) * adminPageSize
+  const { data, error, count } = await adminSupabase
+    .from("projects")
+    .select(
+      "id, name, owner_id, category, version, created_at, file_path, file_name, is_blocked, profiles(username, display_name)",
+      { count: "exact" },
+    )
+    .order("created_at", { ascending: false })
+    .range(offset, offset + adminPageSize - 1)
+  if (error)
+    return res.status(502).json({ error: "Não foi possível carregar submissões." })
+
+  return res.json({
+    projects: (data || []).map((project) => {
+      const profile = Array.isArray(project.profiles)
+        ? project.profiles[0]
+        : project.profiles
+      return {
+        id: project.id,
+        name: project.name,
+        ownerId: project.owner_id,
+        ownerName: profile?.display_name || profile?.username || "Conta removida",
+        category: project.category,
+        version: project.version,
+        fileName: project.file_name,
+        createdAt: project.created_at,
+        blocked: Boolean(project.is_blocked),
+      }
+    }),
+    hasMore: offset + (data || []).length < (count || 0),
+  })
+})
+
+app.patch("/api/admin/users/:id/block", requireAdmin, async (req, res) => {
+  const userId = req.params.id
+  if (!uuidPattern.test(userId))
+    return res.status(400).json({ error: "Identificador de usuário inválido." })
+  if (typeof req.body?.blocked !== "boolean")
+    return res.status(400).json({ error: "Informe o estado do bloqueio." })
+
+  const { data, error } = await adminSupabase.auth.admin.getUserById(userId)
+  if (error || !data.user)
+    return res.status(404).json({ error: "Usuário não encontrado." })
+  if (data.user.app_metadata?.role === "admin")
+    return res.status(403).json({ error: "Não é permitido bloquear um administrador." })
+
+  const { data: profile, error: profileError } = await adminSupabase
+    .from("profiles")
+    .select("is_blocked")
+    .eq("id", userId)
+    .maybeSingle()
+  if (profileError || !profile)
+    return res.status(404).json({ error: "Perfil não encontrado." })
+
+  const { error: updateProfileError } = await adminSupabase
+    .from("profiles")
+    .update({ is_blocked: req.body.blocked })
+    .eq("id", userId)
+  if (updateProfileError)
+    return res.status(502).json({ error: "Não foi possível atualizar o bloqueio." })
+
+  const { error: updateAuthError } =
+    await adminSupabase.auth.admin.updateUserById(userId, {
+      ban_duration: req.body.blocked ? "876000h" : "none",
+      app_metadata: {
+        ...data.user.app_metadata,
+        blocked: req.body.blocked,
+      },
+    })
+  if (updateAuthError) {
+    const { error: rollbackError } = await adminSupabase
+      .from("profiles")
+      .update({ is_blocked: profile.is_blocked })
+      .eq("id", userId)
+    if (rollbackError)
+      console.error("Failed to roll back blocked profile state", rollbackError)
+    return res.status(502).json({ error: "Não foi possível atualizar o bloqueio." })
+  }
+
+  return res.json({ ok: true, blocked: req.body.blocked })
+})
+
+app.delete("/api/admin/users/:id", requireAdmin, async (req, res) => {
+  const userId = req.params.id
+  if (!uuidPattern.test(userId))
+    return res.status(400).json({ error: "Identificador de usuário inválido." })
+  if (userId === req.adminUser.id)
+    return res.status(403).json({ error: "Não é permitido excluir a própria conta." })
+
+  const { data: authData, error: authLookupError } =
+    await adminSupabase.auth.admin.getUserById(userId)
+  if (authLookupError || !authData.user)
+    return res.status(404).json({ error: "Usuário não encontrado." })
+  if (authData.user.app_metadata?.role === "admin")
+    return res.status(403).json({ error: "Não é permitido excluir outro administrador." })
+
+  const { data: profile, error: profileError } = await adminSupabase
+    .from("profiles")
+    .select("avatar_path")
+    .eq("id", userId)
+    .maybeSingle()
+  if (profileError)
+    return res.status(502).json({ error: "Não foi possível carregar o perfil." })
+
+  const { data: projects, error: projectsError } = await adminSupabase
+    .from("projects")
+    .select("file_path")
+    .eq("owner_id", userId)
+  if (projectsError)
+    return res.status(502).json({ error: "Não foi possível carregar submissões." })
+
+  const projectFilesError = await removeStorageFiles(
+    "devio-project-files",
+    (projects || []).map((project) => project.file_path),
+  )
+  if (projectFilesError)
+    return res.status(502).json({ error: "Não foi possível remover arquivos das submissões." })
+
+  if (profile?.avatar_path) {
+    const avatarError = await removeStorageFiles("devio-avatars", [
+      profile.avatar_path,
+    ])
+    if (avatarError)
+      return res.status(502).json({ error: "Não foi possível remover a foto do perfil." })
+  }
+
+  const { error: deleteError } =
+    await adminSupabase.auth.admin.deleteUser(userId)
+  if (deleteError)
+    return res.status(502).json({
+      error: "Os arquivos foram removidos, mas não foi possível excluir a conta.",
+    })
+  return res.json({ ok: true })
+})
+
+app.delete("/api/admin/projects/:id", requireAdmin, async (req, res) => {
+  const projectId = req.params.id
+  if (!uuidPattern.test(projectId))
+    return res.status(400).json({ error: "Identificador de submissão inválido." })
+
+  const { data: project, error: projectError } = await adminSupabase
+    .from("projects")
+    .select("file_path")
+    .eq("id", projectId)
+    .maybeSingle()
+  if (projectError)
+    return res.status(502).json({ error: "Não foi possível carregar a submissão." })
+  if (!project)
+    return res.status(404).json({ error: "Submissão não encontrada." })
+
+  const storageError = await removeStorageFiles("devio-project-files", [
+    project.file_path,
+  ])
+  if (storageError)
+    return res.status(502).json({ error: "Não foi possível remover o arquivo da submissão." })
+
+  const { error: deleteError } = await adminSupabase
+    .from("projects")
+    .delete()
+    .eq("id", projectId)
+  if (deleteError)
+    return res.status(502).json({
+      error: "O arquivo foi removido, mas não foi possível excluir a submissão.",
+    })
+  return res.json({ ok: true })
+})
+
+app.patch("/api/admin/projects/:id/block", requireAdmin, async (req, res) => {
+  const projectId = req.params.id
+  if (!uuidPattern.test(projectId))
+    return res.status(400).json({ error: "Identificador de submissão inválido." })
+  if (typeof req.body?.blocked !== "boolean")
+    return res.status(400).json({ error: "Informe o estado do bloqueio." })
+
+  const { data, error } = await adminSupabase
+    .from("projects")
+    .update({ is_blocked: req.body.blocked })
+    .eq("id", projectId)
+    .select("id")
+    .maybeSingle()
+  if (error)
+    return res.status(502).json({ error: "Não foi possível alterar o bloqueio da submissão." })
+  if (!data)
+    return res.status(404).json({ error: "Submissão não encontrada." })
+  return res.json({ ok: true, blocked: req.body.blocked })
+})
 
 app.post("/api/auth/register", async (req, res) => {
   const { name, username, email, password } = req.body || {}

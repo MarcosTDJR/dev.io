@@ -4,8 +4,12 @@ create table if not exists public.profiles (
   display_name text not null,
   bio text not null default '' check (char_length(bio) <= 280),
   avatar_path text,
+  is_blocked boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+alter table public.profiles
+  add column if not exists is_blocked boolean not null default false;
 
 create table if not exists public.projects (
   id uuid primary key default gen_random_uuid(),
@@ -21,8 +25,12 @@ create table if not exists public.projects (
   file_type text not null default 'application/octet-stream',
   sandbox_type text not null default 'auto'
     check (sandbox_type in ('auto', 'html', 'javascript', 'css', 'source')),
+  is_blocked boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+alter table public.projects
+  add column if not exists is_blocked boolean not null default false;
 
 create table if not exists public.library (
   user_id uuid not null references public.profiles (id) on delete cascade,
@@ -76,7 +84,10 @@ alter table public.profiles enable row level security;
 alter table public.projects enable row level security;
 alter table public.library enable row level security;
 
-grant select on public.profiles, public.projects to anon, authenticated;
+revoke select on public.profiles from anon, authenticated;
+grant select (id, username, display_name, bio, avatar_path, created_at)
+  on public.profiles to anon, authenticated;
+grant select on public.projects to anon, authenticated;
 grant update (username, display_name, bio, avatar_path)
   on public.profiles to authenticated;
 grant insert (
@@ -88,6 +99,26 @@ grant update (name, description, category, version, price)
 grant delete on public.projects to authenticated;
 grant select, insert, delete on public.library to authenticated;
 
+create or replace function public.is_current_user_blocked()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select coalesce(
+    (
+      select profiles.is_blocked
+      from public.profiles
+      where profiles.id = (select auth.uid())
+    ),
+    false
+  );
+$$;
+
+revoke all on function public.is_current_user_blocked() from public;
+grant execute on function public.is_current_user_blocked() to authenticated;
+
 drop policy if exists "Profiles are publicly readable" on public.profiles;
 create policy "Profiles are publicly readable"
   on public.profiles for select
@@ -96,44 +127,71 @@ create policy "Profiles are publicly readable"
 drop policy if exists "Users can update their profile" on public.profiles;
 create policy "Users can update their profile"
   on public.profiles for update to authenticated
-  using (id = (select auth.uid()))
-  with check (id = (select auth.uid()));
+  using (
+    id = (select auth.uid())
+    and not (select public.is_current_user_blocked())
+  )
+  with check (
+    id = (select auth.uid())
+    and not (select public.is_current_user_blocked())
+  );
 
 drop policy if exists "Projects are publicly readable" on public.projects;
 create policy "Projects are publicly readable"
   on public.projects for select
-  using (true);
+  using (not is_blocked or owner_id = (select auth.uid()));
 
 drop policy if exists "Users can create their own projects" on public.projects;
 create policy "Users can create their own projects"
   on public.projects for insert to authenticated
-  with check (owner_id = (select auth.uid()));
+  with check (
+    owner_id = (select auth.uid())
+    and not (select public.is_current_user_blocked())
+  );
 
 drop policy if exists "Users can update their own projects" on public.projects;
 create policy "Users can update their own projects"
   on public.projects for update to authenticated
-  using (owner_id = (select auth.uid()))
-  with check (owner_id = (select auth.uid()));
+  using (
+    owner_id = (select auth.uid())
+    and not (select public.is_current_user_blocked())
+  )
+  with check (
+    owner_id = (select auth.uid())
+    and not (select public.is_current_user_blocked())
+  );
 
 drop policy if exists "Users can delete their own projects" on public.projects;
 create policy "Users can delete their own projects"
   on public.projects for delete to authenticated
-  using (owner_id = (select auth.uid()));
+  using (
+    owner_id = (select auth.uid())
+    and not (select public.is_current_user_blocked())
+  );
 
 drop policy if exists "Users can view their library" on public.library;
 create policy "Users can view their library"
   on public.library for select to authenticated
-  using (user_id = (select auth.uid()));
+  using (
+    user_id = (select auth.uid())
+    and not (select public.is_current_user_blocked())
+  );
 
 drop policy if exists "Users can save projects to their library" on public.library;
 create policy "Users can save projects to their library"
   on public.library for insert to authenticated
-  with check (user_id = (select auth.uid()));
+  with check (
+    user_id = (select auth.uid())
+    and not (select public.is_current_user_blocked())
+  );
 
 drop policy if exists "Users can remove projects from their library" on public.library;
 create policy "Users can remove projects from their library"
   on public.library for delete to authenticated
-  using (user_id = (select auth.uid()));
+  using (
+    user_id = (select auth.uid())
+    and not (select public.is_current_user_blocked())
+  );
 
 insert into storage.buckets (id, name, public, file_size_limit)
 values
@@ -147,7 +205,10 @@ set public = excluded.public,
 drop policy if exists "Authenticated users can read project files" on storage.objects;
 create policy "Authenticated users can read project files"
   on storage.objects for select to authenticated
-  using (bucket_id = 'devio-project-files');
+  using (
+    bucket_id = 'devio-project-files'
+    and not (select public.is_current_user_blocked())
+  );
 
 drop policy if exists "Users can upload project files in their folder" on storage.objects;
 create policy "Users can upload project files in their folder"
@@ -155,6 +216,7 @@ create policy "Users can upload project files in their folder"
   with check (
     bucket_id = 'devio-project-files'
     and (storage.foldername(name))[1] = (select auth.uid())::text
+    and not (select public.is_current_user_blocked())
   );
 
 drop policy if exists "Users can delete project files in their folder" on storage.objects;
@@ -163,6 +225,7 @@ create policy "Users can delete project files in their folder"
   using (
     bucket_id = 'devio-project-files'
     and (storage.foldername(name))[1] = (select auth.uid())::text
+    and not (select public.is_current_user_blocked())
   );
 
 drop policy if exists "Users can read their avatars" on storage.objects;
@@ -171,6 +234,7 @@ create policy "Users can read their avatars"
   using (
     bucket_id = 'devio-avatars'
     and (storage.foldername(name))[1] = (select auth.uid())::text
+    and not (select public.is_current_user_blocked())
   );
 
 drop policy if exists "Users can upload their avatars" on storage.objects;
@@ -179,6 +243,7 @@ create policy "Users can upload their avatars"
   with check (
     bucket_id = 'devio-avatars'
     and (storage.foldername(name))[1] = (select auth.uid())::text
+    and not (select public.is_current_user_blocked())
   );
 
 drop policy if exists "Users can update their avatars" on storage.objects;
@@ -187,10 +252,12 @@ create policy "Users can update their avatars"
   using (
     bucket_id = 'devio-avatars'
     and (storage.foldername(name))[1] = (select auth.uid())::text
+    and not (select public.is_current_user_blocked())
   )
   with check (
     bucket_id = 'devio-avatars'
     and (storage.foldername(name))[1] = (select auth.uid())::text
+    and not (select public.is_current_user_blocked())
   );
 
 drop policy if exists "Users can delete their avatars" on storage.objects;
@@ -199,4 +266,5 @@ create policy "Users can delete their avatars"
   using (
     bucket_id = 'devio-avatars'
     and (storage.foldername(name))[1] = (select auth.uid())::text
+    and not (select public.is_current_user_blocked())
   );

@@ -57,8 +57,12 @@ import {
   changePassword,
   completePasswordReset,
   confirmEmail,
+  deleteAdminProject,
+  deleteAdminUser,
   deleteProject,
   downloadProject,
+  getAdminProjects,
+  getAdminUsers,
   getCurrentUser,
   getLibrary,
   getMyProjects,
@@ -72,15 +76,22 @@ import {
   registerAccount,
   requestPasswordReset,
   resendConfirmation,
+  setAdminProjectBlocked,
+  setAdminUserBlocked,
   updateProfile,
   updateProject,
   uploadAvatar,
   uploadProject,
 } from "./lib/api"
-import type { ApiProject, ProfileUser } from "./lib/api"
+import type {
+  AdminProject,
+  AdminUser,
+  ApiProject,
+  ProfileUser,
+} from "./lib/api"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-type Screen = "splash" | "login" | "register" | "email-confirmation" | "password-reset" | "password-change" | "home" | "explore" | "search" | "project-detail" | "acquire" | "acquire-success" | "donate" | "library" | "publish" | "security-check" | "security-blocked" | "sandbox" | "my-projects" | "profile" | "profile-edit" | "settings" | "report"
+type Screen = "splash" | "login" | "register" | "email-confirmation" | "password-reset" | "password-change" | "home" | "explore" | "search" | "project-detail" | "acquire" | "acquire-success" | "donate" | "library" | "publish" | "security-check" | "security-blocked" | "sandbox" | "my-projects" | "profile" | "profile-edit" | "settings" | "admin" | "report"
 
 // ─── Shared colour tokens ─────────────────────────────────────────────────────
 const C = {
@@ -985,12 +996,26 @@ function RegisterScreen({ navigate }: { navigate: (s: Screen) => void }) {
         "devio_pending_email",
         form.email.trim().toLowerCase(),
       )
+      sessionStorage.removeItem("devio_confirmation_rate_limited")
       sessionStorage.setItem(
         "devio_confirmation_email_sent",
         String(response.emailSent),
       )
       navigate("email-confirmation")
     } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.toLowerCase().includes("email rate limit exceeded")
+      ) {
+        sessionStorage.setItem(
+          "devio_pending_email",
+          form.email.trim().toLowerCase(),
+        )
+        sessionStorage.setItem("devio_confirmation_email_sent", "false")
+        sessionStorage.setItem("devio_confirmation_rate_limited", "true")
+        navigate("email-confirmation")
+        return
+      }
       setError(
         error instanceof Error
           ? error.message
@@ -1136,6 +1161,9 @@ function EmailConfirmationScreen({
   const [confirmed, setConfirmed] = useState(false)
   const [resending, setResending] = useState(false)
   const [resent, setResent] = useState(false)
+  const [rateLimited, setRateLimited] = useState(
+    () => sessionStorage.getItem("devio_confirmation_rate_limited") === "true",
+  )
   const [deliveryReady, setDeliveryReady] = useState(
     () => sessionStorage.getItem("devio_confirmation_email_sent") !== "false",
   )
@@ -1157,6 +1185,7 @@ function EmailConfirmationScreen({
       sessionStorage.removeItem("devio_pending_email")
       sessionStorage.removeItem("devio_pending_email_change")
       sessionStorage.removeItem("devio_confirmation_email_sent")
+      sessionStorage.removeItem("devio_confirmation_rate_limited")
       window.history.replaceState(null, "", window.location.pathname)
       setConfirmed(true)
     } catch (error) {
@@ -1181,6 +1210,8 @@ function EmailConfirmationScreen({
         sessionStorage.getItem("devio_pending_email_change") === "true",
       )
       setDeliveryReady(response.emailSent)
+      setRateLimited(false)
+      sessionStorage.removeItem("devio_confirmation_rate_limited")
       sessionStorage.setItem(
         "devio_confirmation_email_sent",
         String(response.emailSent),
@@ -1192,11 +1223,22 @@ function EmailConfirmationScreen({
         )
       }
     } catch (error) {
-      setError(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível reenviar o e-mail.",
-      )
+      if (
+        error instanceof Error &&
+        error.message.toLowerCase().includes("email rate limit exceeded")
+      ) {
+        setRateLimited(true)
+        sessionStorage.setItem("devio_confirmation_rate_limited", "true")
+        setError(
+          "O limite de envios do Supabase foi atingido. Aguarde antes de tentar novamente ou configure SMTP personalizado no Supabase.",
+        )
+      } else {
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Não foi possível reenviar o e-mail.",
+        )
+      }
     } finally {
       setResending(false)
     }
@@ -1235,7 +1277,9 @@ function EmailConfirmationScreen({
             marginBottom: 10,
           }}
         >
-          Verifique sua caixa de entrada
+          {rateLimited
+            ? "Envio de confirmação temporariamente limitado"
+            : "Verifique sua caixa de entrada"}
         </div>
         <div
           style={{
@@ -1245,24 +1289,28 @@ function EmailConfirmationScreen({
             marginBottom: 28,
           }}
         >
-          {deliveryReady
-            ? "Enviamos um link de confirmação para ativar sua conta."
-            : "O e-mail de confirmação não foi enviado. Verifique as configurações de autenticação do Supabase ou tente reenviar."}
+          {rateLimited
+            ? "O limite de envio do Supabase foi atingido. Sua conta pode já ter sido criada, mas o e-mail talvez não tenha sido enviado. Aguarde antes de reenviar e não tente cadastrar novamente."
+            : deliveryReady
+              ? "Enviamos um link de confirmação para ativar sua conta."
+              : "O e-mail de confirmação não foi enviado. Verifique as configurações de autenticação do Supabase ou tente reenviar."}
         </div>
         {error && (
           <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>
             {error}
           </div>
         )}
-        <Btn
-          label={
-            confirmed
-              ? "Continuar para o login"
-              : "Já confirmei meu e-mail"
-          }
-          onClick={() => (confirmed ? navigate("login") : confirm())}
-          full
-        />
+        {(deliveryReady || confirmed) && (
+          <Btn
+            label={
+              confirmed
+                ? "Continuar para o login"
+                : "Já confirmei meu e-mail"
+            }
+            onClick={() => (confirmed ? navigate("login") : confirm())}
+            full
+          />
+        )}
         <button
           onClick={resend}
           disabled={resending}
@@ -1295,6 +1343,9 @@ function PasswordResetScreen({ navigate }: { navigate: (s: Screen) => void }) {
     () =>
       new URLSearchParams(window.location.search).get("token_hash") ||
       new URLSearchParams(window.location.hash.slice(1)).get("resetPassword") ||
+      (new URLSearchParams(window.location.search).has("resetPassword")
+        ? "recovery"
+        : "") ||
       (new URLSearchParams(window.location.hash.slice(1)).get("type") === "recovery"
         ? "recovery"
         : "") ||
@@ -4401,6 +4452,26 @@ function ProfileEditScreen({ navigate }: { navigate: (s: Screen) => void }) {
 function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
   const [logoutError, setLogoutError] = useState("")
   const [loggingOut, setLoggingOut] = useState(false)
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [adminCheckError, setAdminCheckError] = useState("")
+  useEffect(() => {
+    let active = true
+    getCurrentUser()
+      .then(({ user }) => {
+        if (active) setIsAdmin(Boolean(user?.isAdmin))
+      })
+      .catch((reason) => {
+        if (active)
+          setAdminCheckError(
+            reason instanceof Error
+              ? reason.message
+              : "Não foi possível verificar as permissões administrativas.",
+          )
+      })
+    return () => {
+      active = false
+    }
+  }, [])
   const logout = async () => {
     setLogoutError("")
     setLoggingOut(true)
@@ -4453,6 +4524,7 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
       <Header title="Configurações" onBack={() => navigate("profile")} />
       <div style={{ padding: "16px 20px 24px" }}>
         {logoutError && <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>{logoutError}</div>}
+        {adminCheckError && <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>{adminCheckError}</div>}
         {groups.map((g) => (
           <div key={g.title} style={{ marginBottom: 24 }}>
             <div
@@ -4467,6 +4539,7 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
             >
               {g.title}
             </div>
+
             <div
               style={{
                 background: C.surface,
@@ -4505,6 +4578,31 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
           </div>
         ))}
 
+        {isAdmin && (
+          <button
+            onClick={() => navigate("admin")}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              gap: 14,
+              marginBottom: 16,
+              padding: "14px 16px",
+              background: C.surface,
+              border: `1px solid ${C.border}`,
+              borderRadius: 16,
+              color: C.text,
+              cursor: "pointer",
+              fontFamily: "Inter, sans-serif",
+              textAlign: "left",
+            }}
+          >
+            <Shield size={18} color={C.primary} />
+            <span style={{ flex: 1, fontSize: 14 }}>Painel administrativo</span>
+            <ChevronRight size={14} color={C.text3} />
+          </button>
+        )}
+
         <div
           style={{
             background: C.surface,
@@ -4538,6 +4636,441 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
             >
               {loggingOut ? "Saindo..." : "Sair da conta"}
             </span>
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AdminScreen({ navigate }: { navigate: (s: Screen) => void }) {
+  const [tab, setTab] = useState<"users" | "projects">("users")
+  const [users, setUsers] = useState<AdminUser[]>([])
+  const [projects, setProjects] = useState<AdminProject[]>([])
+  const [usersHasMore, setUsersHasMore] = useState(false)
+  const [projectsHasMore, setProjectsHasMore] = useState(false)
+  const [userPage, setUserPage] = useState(1)
+  const [projectPage, setProjectPage] = useState(1)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState("")
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    setError("")
+    const request =
+      tab === "users" ? getAdminUsers(userPage) : getAdminProjects(projectPage)
+    request
+      .then((response) => {
+        if (!active) return
+        if ("users" in response) {
+          setUsers(response.users)
+          setUsersHasMore(response.hasMore)
+        } else {
+          setProjects(response.projects)
+          setProjectsHasMore(response.hasMore)
+        }
+      })
+      .catch((reason) => {
+        if (active)
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "Não foi possível carregar os dados administrativos.",
+          )
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [tab, userPage, projectPage, refreshKey])
+
+  const toggleBlock = async (user: AdminUser) => {
+    const action = user.blocked ? "desbloquear" : "bloquear"
+    if (!window.confirm(`Deseja ${action} ${user.email}?`)) return
+    setBusyId(user.id)
+    setError("")
+    try {
+      await setAdminUserBlocked(user.id, !user.blocked)
+      setRefreshKey((key) => key + 1)
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível alterar o bloqueio.",
+      )
+    } finally {
+      setBusyId("")
+    }
+  }
+
+  const removeUser = async (user: AdminUser) => {
+    if (
+      !window.confirm(
+        `Excluir ${user.email}? A conta, o perfil, as submissões, os arquivos e os itens da biblioteca serão removidos permanentemente.`,
+      )
+    )
+      return
+    setBusyId(user.id)
+    setError("")
+    try {
+      await deleteAdminUser(user.id)
+      setRefreshKey((key) => key + 1)
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível excluir o usuário.",
+      )
+    } finally {
+      setBusyId("")
+    }
+  }
+
+  const removeProject = async (project: AdminProject) => {
+    if (
+      !window.confirm(
+        `Excluir a submissão “${project.name}” e o arquivo armazenado?`,
+      )
+    )
+      return
+    setBusyId(project.id)
+    setError("")
+    try {
+      await deleteAdminProject(project.id)
+      setRefreshKey((key) => key + 1)
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível excluir a submissão.",
+      )
+    } finally {
+      setBusyId("")
+    }
+  }
+
+  const toggleProjectBlock = async (project: AdminProject) => {
+    const action = project.blocked ? "desbloquear" : "bloquear"
+    if (!window.confirm(`Deseja ${action} a submissão “${project.name}”?`)) return
+    setBusyId(project.id)
+    setError("")
+    try {
+      await setAdminProjectBlocked(project.id, !project.blocked)
+      setRefreshKey((key) => key + 1)
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível alterar o bloqueio da submissão.",
+      )
+    } finally {
+      setBusyId("")
+    }
+  }
+
+  const page = tab === "users" ? userPage : projectPage
+  const hasMore = tab === "users" ? usersHasMore : projectsHasMore
+  const changePage = (direction: -1 | 1) => {
+    if (tab === "users") setUserPage((value) => Math.max(1, value + direction))
+    else setProjectPage((value) => Math.max(1, value + direction))
+  }
+
+  return (
+    <div
+      className="phone-scroll"
+      style={{
+        width: "100%",
+        height: "100%",
+        background: C.bg,
+        overflowY: "auto",
+        paddingBottom: 80,
+      }}
+    >
+      <Header title="Administração" onBack={() => navigate("settings")} />
+      <div style={{ padding: "20px 20px 32px" }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
+          {(["users", "projects"] as const).map((value) => {
+            const selected = tab === value
+            return (
+              <button
+                key={value}
+                onClick={() => setTab(value)}
+                style={{
+                  flex: 1,
+                  padding: "11px 12px",
+                  border: `1px solid ${selected ? C.primary : C.border}`,
+                  borderRadius: 12,
+                  background: selected ? C.primary + "22" : C.surface,
+                  color: selected ? C.primary : C.text2,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "Inter, sans-serif",
+                }}
+              >
+                {value === "users" ? "Usuários" : "Submissões"}
+              </button>
+            )
+          })}
+        </div>
+
+        {error && (
+          <div
+            role="alert"
+            style={{ color: C.danger, fontSize: 13, marginBottom: 16 }}
+          >
+            {error}
+          </div>
+        )}
+        {loading ? (
+          <div style={{ color: C.text2, textAlign: "center", padding: 28 }}>
+            Carregando...
+          </div>
+        ) : tab === "users" ? (
+          users.length ? (
+            <div style={{ display: "grid", gap: 12 }}>
+              {users.map((user) => (
+                <div
+                  key={user.id}
+                  style={{
+                    background: C.surface,
+                    border: `1px solid ${C.border}`,
+                    borderRadius: 14,
+                    padding: 15,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      marginBottom: 12,
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div
+                        style={{
+                          color: C.text,
+                          fontSize: 14,
+                          fontWeight: 600,
+                          overflowWrap: "anywhere",
+                        }}
+                      >
+                        {user.name || user.username || user.email}
+                      </div>
+                      <div
+                        style={{
+                          color: C.text2,
+                          fontSize: 12,
+                          marginTop: 4,
+                          overflowWrap: "anywhere",
+                        }}
+                      >
+                        {user.email}
+                      </div>
+                      {user.username && (
+                        <div style={{ color: C.text3, fontSize: 12, marginTop: 3 }}>
+                          @{user.username}
+                        </div>
+                      )}
+                    </div>
+                    <div
+                      style={{
+                        flexShrink: 0,
+                        alignSelf: "flex-start",
+                        color: user.isAdmin
+                          ? C.primary
+                          : user.blocked
+                            ? C.danger
+                            : C.success,
+                        fontSize: 11,
+                        fontWeight: 700,
+                      }}
+                    >
+                      {user.isAdmin ? "ADMIN" : user.blocked ? "BLOQUEADO" : "ATIVO"}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      onClick={() => toggleBlock(user)}
+                      disabled={Boolean(busyId) || user.isAdmin}
+                      style={{
+                        flex: 1,
+                        padding: "9px 10px",
+                        border: `1px solid ${C.border}`,
+                        borderRadius: 9,
+                        background: C.surface2,
+                        color: C.text,
+                        cursor: user.isAdmin ? "not-allowed" : "pointer",
+                        opacity: user.isAdmin ? 0.5 : 1,
+                        fontSize: 12,
+                        fontFamily: "Inter, sans-serif",
+                      }}
+                    >
+                      {busyId === user.id
+                        ? "Aguarde..."
+                        : user.blocked
+                          ? "Desbloquear"
+                          : "Bloquear"}
+                    </button>
+                    <button
+                      onClick={() => removeUser(user)}
+                      disabled={Boolean(busyId) || user.isAdmin}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 6,
+                        padding: "9px 10px",
+                        border: `1px solid ${C.danger}55`,
+                        borderRadius: 9,
+                        background: C.danger + "12",
+                        color: C.danger,
+                        cursor: user.isAdmin ? "not-allowed" : "pointer",
+                        opacity: user.isAdmin ? 0.5 : 1,
+                        fontSize: 12,
+                        fontFamily: "Inter, sans-serif",
+                      }}
+                    >
+                      <Trash2 size={13} />
+                      Excluir
+                    </button>
+                  </div>
+                  <div style={{ color: C.text3, fontSize: 11, marginTop: 10 }}>
+                    Cadastro: {new Date(user.createdAt).toLocaleDateString("pt-BR")}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ color: C.text2, textAlign: "center", padding: 28 }}>
+              Nenhum usuário nesta página.
+            </div>
+          )
+        ) : projects.length ? (
+          <div style={{ display: "grid", gap: 12 }}>
+            {projects.map((project) => (
+              <div
+                key={project.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  background: C.surface,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 14,
+                  padding: 15,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    style={{
+                      color: C.text,
+                      fontSize: 14,
+                      fontWeight: 600,
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {project.name}
+                  </div>
+                  <div style={{ color: C.text2, fontSize: 12, marginTop: 4 }}>
+                    {project.ownerName} · {project.category}
+                    {project.blocked ? " · BLOQUEADA" : ""}
+                  </div>
+                  <div style={{ color: C.text3, fontSize: 11, marginTop: 4 }}>
+                    {project.fileName} ·{" "}
+                    {new Date(project.createdAt).toLocaleDateString("pt-BR")}
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexShrink: 0, gap: 7 }}>
+                  <button
+                    onClick={() => toggleProjectBlock(project)}
+                    disabled={Boolean(busyId)}
+                    style={{
+                      padding: "8px 9px",
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 9,
+                      background: C.surface2,
+                      color: C.text,
+                      cursor: "pointer",
+                      fontSize: 11,
+                      fontFamily: "Inter, sans-serif",
+                    }}
+                  >
+                    {busyId === project.id
+                      ? "..."
+                      : project.blocked
+                        ? "Desbloquear"
+                        : "Bloquear"}
+                  </button>
+                  <button
+                    onClick={() => removeProject(project)}
+                    disabled={Boolean(busyId)}
+                    aria-label={`Excluir submissão ${project.name}`}
+                    style={{
+                      display: "grid",
+                      placeItems: "center",
+                      width: 38,
+                      height: 38,
+                      flexShrink: 0,
+                      border: `1px solid ${C.danger}55`,
+                      borderRadius: 10,
+                      background: C.danger + "12",
+                      color: C.danger,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {busyId === project.id ? "…" : <Trash2 size={16} />}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ color: C.text2, textAlign: "center", padding: 28 }}>
+            Nenhuma submissão nesta página.
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            gap: 18,
+            marginTop: 20,
+          }}
+        >
+          <button
+            onClick={() => changePage(-1)}
+            disabled={page <= 1 || loading}
+            style={{
+              background: "none",
+              border: "none",
+              color: page <= 1 ? C.text3 : C.text,
+              cursor: page <= 1 ? "not-allowed" : "pointer",
+            }}
+          >
+            Anterior
+          </button>
+          <span style={{ color: C.text2, fontSize: 12 }}>Página {page}</span>
+          <button
+            onClick={() => changePage(1)}
+            disabled={!hasMore || loading}
+            style={{
+              background: "none",
+              border: "none",
+              color: !hasMore ? C.text3 : C.text,
+              cursor: !hasMore ? "not-allowed" : "pointer",
+            }}
+          >
+            Próxima
           </button>
         </div>
       </div>
@@ -4834,13 +5367,19 @@ function CoverOverlay({ onClose }: { onClose: () => void }) {
 export default function App() {
   const [screen, setScreen] = useState<Screen>(() => {
     const params = new URLSearchParams(window.location.hash.slice(1))
+    const searchParams = new URLSearchParams(window.location.search)
     if (
+      searchParams.has("confirmEmail") ||
       params.has("confirmEmail") ||
       params.get("type") === "signup" ||
       params.get("type") === "email_change"
     )
       return "email-confirmation"
-    if (params.has("resetPassword") || params.get("type") === "recovery")
+    if (
+      searchParams.has("resetPassword") ||
+      params.has("resetPassword") ||
+      params.get("type") === "recovery"
+    )
       return "password-reset"
     return "splash"
   })
@@ -4978,6 +5517,8 @@ export default function App() {
         return <ProfileEditScreen navigate={navigate} />
       case "settings":
         return <SettingsScreen navigate={navigate} />
+      case "admin":
+        return <AdminScreen navigate={navigate} />
       case "report":
         return <ReportScreen navigate={navigate} />
       default:

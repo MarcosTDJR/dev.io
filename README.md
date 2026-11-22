@@ -16,6 +16,25 @@ Uploads aceitam qualquer tipo de arquivo até 100 MB e ficam em bucket privado. 
 
 O esquema é versionado em `supabase/migrations/`. A aplicação da migração ao projeto remoto requer acesso administrativo ao Supabase e deve ser feita pelo SQL Editor ou por um ambiente de CI com credenciais protegidas; não use a chave publishable para isso.
 
+## Administração
+
+O painel fica em **Configurações → Painel administrativo** e usa a conta normal do Supabase. Para habilitar um administrador:
+
+1. Configure `SUPABASE_SERVICE_ROLE_KEY` apenas no ambiente do servidor Node. Não use prefixo `VITE_` e nunca publique essa chave.
+2. No SQL Editor do Supabase, marque a conta autorizada substituindo o e-mail:
+
+   ```sql
+   update auth.users
+   set raw_app_meta_data =
+     coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"admin"}'::jsonb
+   where lower(email) = lower('seu-email@exemplo.com');
+   ```
+
+3. Saia e entre novamente no app com essa conta para atualizar a sessão. Use o e-mail e a senha já cadastrados no Supabase; o projeto não cria credenciais administrativas padrão.
+4. Aplique a migração de bloqueio em `supabase/migrations/20261122000000_initial.sql`.
+
+O servidor valida o papel administrativo em cada rota. Bloquear um usuário impede novos logins e operações protegidas por RLS; bloquear uma submissão a oculta da listagem pública. Excluir uma submissão remove seu arquivo e registros da biblioteca; excluir um usuário remove a conta, perfil, submissões, itens da biblioteca e arquivos conhecidos do perfil. Administradores não podem excluir ou bloquear a própria conta nem outros administradores.
+
 ## Segurança e operação
 
 A arquitetura de produção, os controles obrigatórios, o processo de divulgação responsável e a rotina de atualização estão em [SECURITY.md](SECURITY.md). O CI executa CodeQL, auditoria de dependências e build. O DAST com Wapiti é manual/agendado e exige `DAST_TARGET_URL` apontando para um ambiente controlado e autorizado.
