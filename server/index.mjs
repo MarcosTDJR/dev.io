@@ -380,16 +380,22 @@ const app = express()
 app.use(express.json({ limit: "1mb" }))
 if (process.env.NODE_ENV === "production" && !process.env.VERCEL)
   app.use(express.static(path.join(root, "dist")))
-const allowedWebOrigins = (
-  process.env.WEB_ORIGIN || "http://localhost:8443"
-)
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean)
+const allowedWebOrigins = new Set([
+  ...(process.env.WEB_ORIGIN || "http://localhost:8443")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+  "https://localhost",
+  "capacitor://localhost",
+  "http://localhost",
+])
 app.use((req, res, next) => {
   const origin = req.headers.origin
-  if (!origin || allowedWebOrigins.includes(origin))
-    res.setHeader("Access-Control-Allow-Origin", origin || allowedWebOrigins[0])
+  if (!origin || allowedWebOrigins.has(origin))
+    res.setHeader(
+      "Access-Control-Allow-Origin",
+      origin || [...allowedWebOrigins][0],
+    )
   res.setHeader("Vary", "Origin")
   res.setHeader("Access-Control-Allow-Credentials", "true")
   res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type")

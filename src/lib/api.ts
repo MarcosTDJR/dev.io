@@ -1,4 +1,5 @@
 import { supabase } from "../utils/supabase"
+import { Capacitor } from "@capacitor/core"
 
 export type ApiUser = {
   id: string
@@ -129,9 +130,18 @@ function throwIfError(error: { message: string } | null) {
 }
 
 function apiBaseUrl() {
-  return (
-    import.meta.env.VITE_API_URL || import.meta.env.VITE_ADMIN_API_URL || ""
-  ).replace(/\/+$/, "")
+  const configuredUrl = (
+    import.meta.env.VITE_API_URL ||
+    import.meta.env.VITE_ADMIN_API_URL ||
+    import.meta.env.VITE_PUBLIC_APP_URL ||
+    ""
+  ).trim()
+  if (configuredUrl) return configuredUrl.replace(/\/+$/, "")
+  if (Capacitor.isNativePlatform())
+    throw new Error(
+      "A API não foi configurada neste APK. Gere novamente o app com VITE_API_URL definido para o domínio HTTPS da Vercel.",
+    )
+  return ""
 }
 
 function mapProject(row: ProjectRow): ApiProject {

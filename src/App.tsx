@@ -1793,6 +1793,10 @@ function HomeScreen({
           </div>
         </div>
         <button
+          type="button"
+          aria-label="Abrir notificações"
+          title="Notificações"
+          onClick={() => navigate("notifications")}
           style={{
             background: C.surface2,
             border: `1px solid ${C.border}`,
@@ -2026,8 +2030,11 @@ function ExploreScreen({
 }) {
   const [activeFilter, setActiveFilter] = useState("Todos")
   const [activeCategory, setActiveCategory] = useState("")
+  const [filtersOpen, setFiltersOpen] = useState(true)
   const { projects, loading, error } = usePublicProjects()
   const filters = ["Todos", "Grátis", "Pagos"]
+  const activeFilterCount =
+    Number(activeFilter !== "Todos") + Number(Boolean(activeCategory))
   const filteredProjects = projects.filter((project) => {
     const matchesPrice =
       activeFilter === "Grátis"
@@ -2052,6 +2059,11 @@ function ExploreScreen({
         title="Explorar"
         right={
           <button
+            type="button"
+            className="explore-filter-button"
+            aria-label={filtersOpen ? "Ocultar filtros" : "Mostrar filtros"}
+            aria-expanded={filtersOpen}
+            onClick={() => setFiltersOpen((open) => !open)}
             style={{
               background: C.surface2,
               border: `1px solid ${C.border}`,
@@ -2061,6 +2073,9 @@ function ExploreScreen({
             }}
           >
             <Filter size={16} color={C.text2} />
+            {activeFilterCount > 0 && (
+              <span className="explore-filter-count">{activeFilterCount}</span>
+            )}
           </button>
         }
       />
@@ -2085,91 +2100,124 @@ function ExploreScreen({
         </div>
       </div>
 
-      {/* Filters */}
-      <div
-        style={{
-          display: "flex",
-          gap: 8,
-          padding: "16px 20px",
-          overflowX: "auto",
-        }}
-      >
-        {filters.map((f) => (
-          <button
-            key={f}
-            onClick={() => setActiveFilter(f)}
+      {filtersOpen && (
+        <>
+          <div
             style={{
-              padding: "7px 14px",
-              borderRadius: 20,
-              border: `1.5px solid ${
-                activeFilter === f ? C.primary : C.border
-              }`,
-              background: activeFilter === f ? C.primary + "22" : "transparent",
-              color: activeFilter === f ? C.primary : C.text2,
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-              fontFamily: "Inter, sans-serif",
-            }}
-          >
-            {f}
-          </button>
-        ))}
-      </div>
-
-      {/* Categories grid */}
-      <SectionTitle title="Categorias" />
-      <div
-        className="category-grid"
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
-          gap: 10,
-          padding: "8px 20px 20px",
-        }}
-      >
-        {CATEGORIES.map(({ label, icon: Icon, color }) => (
-          <button
-            key={label}
-            type="button"
-            aria-pressed={activeCategory === label}
-            onClick={() =>
-              setActiveCategory((current) => (current === label ? "" : label))
-            }
-            style={{
-              background: activeCategory === label ? color + "18" : C.surface,
-              border: `1px solid ${activeCategory === label ? color : C.border}`,
-              borderRadius: 14,
-              padding: "14px 16px",
-              cursor: "pointer",
               display: "flex",
-              alignItems: "center",
-              gap: 10,
-              textAlign: "left",
-              fontFamily: "Inter, sans-serif",
+              gap: 8,
+              padding: "16px 20px",
+              overflowX: "auto",
             }}
           >
-            <div
-              style={{
-                background: color + "22",
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-              }}
-            >
-              <Icon size={18} color={color} />
-            </div>
-            <span style={{ fontSize: 13, color: C.text, fontWeight: 500 }}>
-              {label}
-            </span>
-          </button>
-        ))}
-      </div>
+            {filters.map((f) => (
+              <button
+                key={f}
+                type="button"
+                aria-pressed={activeFilter === f}
+                onClick={() => setActiveFilter(f)}
+                style={{
+                  padding: "7px 14px",
+                  borderRadius: 20,
+                  border: `1.5px solid ${
+                    activeFilter === f ? C.primary : C.border
+                  }`,
+                  background:
+                    activeFilter === f ? C.primary + "22" : "transparent",
+                  color: activeFilter === f ? C.primary : C.text2,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  fontFamily: "Inter, sans-serif",
+                }}
+              >
+                {f}
+              </button>
+            ))}
+            {activeFilterCount > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveFilter("Todos")
+                  setActiveCategory("")
+                }}
+                style={{
+                  border: 0,
+                  background: "transparent",
+                  color: C.primary,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Limpar filtros
+              </button>
+            )}
+          </div>
+
+          <SectionTitle title="Categorias" />
+          <div
+            className="category-grid"
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                "repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
+              gap: 10,
+              padding: "8px 20px 20px",
+            }}
+          >
+            {CATEGORIES.map(({ label, icon: Icon, color }) => (
+              <button
+                key={label}
+                type="button"
+                aria-pressed={activeCategory === label}
+                onClick={() =>
+                  setActiveCategory((current) =>
+                    current === label ? "" : label,
+                  )
+                }
+                style={{
+                  background:
+                    activeCategory === label ? color + "18" : C.surface,
+                  border: `1px solid ${
+                    activeCategory === label ? color : C.border
+                  }`,
+                  borderRadius: 14,
+                  padding: "14px 16px",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  textAlign: "left",
+                  fontFamily: "Inter, sans-serif",
+                }}
+              >
+                <div
+                  style={{
+                    background: color + "22",
+                    width: 36,
+                    height: 36,
+                    borderRadius: 10,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <Icon size={18} color={color} />
+                </div>
+                <span
+                  style={{ fontSize: 13, color: C.text, fontWeight: 500 }}
+                >
+                  {label}
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       {/* Projects */}
       <SectionTitle
@@ -5352,7 +5400,13 @@ function PrivacyScreen({ navigate }: { navigate: (s: Screen) => void }) {
   )
 }
 
-function NotificationsScreen({ navigate }: { navigate: (s: Screen) => void }) {
+function NotificationsScreen({
+  navigate,
+  onBack,
+}: {
+  navigate: (s: Screen) => void
+  onBack: () => void
+}) {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
@@ -5461,7 +5515,7 @@ function NotificationsScreen({ navigate }: { navigate: (s: Screen) => void }) {
 
   return (
     <div className="phone-scroll settings-page">
-      <Header title="Notificações" onBack={() => navigate("settings")} />
+      <Header title="Notificações" onBack={onBack} />
       <div className="settings-page-content">
         {error && <div role="alert" className="settings-error">{error}</div>}
         <section className="settings-section">
@@ -6937,7 +6991,7 @@ export default function App() {
       case "settings":
         return <SettingsScreen navigate={navigate} />
       case "notifications":
-        return <NotificationsScreen navigate={navigate} />
+        return <NotificationsScreen navigate={navigate} onBack={goBack} />
       case "appearance":
         return (
           <AppearanceScreen navigate={navigate} onThemeChange={changeTheme} />

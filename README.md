@@ -74,7 +74,7 @@ Os textos de Termos de Uso e Política de Privacidade aparecem nas respectivas t
 
 ## Aplicativo Android
 
-O app Android usa Capacitor para empacotar a interface web. Configure `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` no `.env` antes do build. Para links compartilháveis no APK, configure `VITE_PUBLIC_APP_URL` com a URL HTTPS pública do site. Para sandbox, administração e pagamentos, defina `VITE_API_URL` com a URL HTTPS pública do projeto Vercel. Mantenha `SUPABASE_SERVICE_ROLE_KEY` somente nas variáveis server-side da Vercel.
+O app Android usa Capacitor para empacotar a interface web. Configure `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` no `.env` antes do build. Para links compartilháveis no APK, configure `VITE_PUBLIC_APP_URL` com a URL HTTPS pública do site. Para sandbox, administração e pagamentos, defina `VITE_API_URL` com a URL HTTPS pública do projeto Vercel; se ela estiver vazia, o app nativo usa `VITE_PUBLIC_APP_URL` como origem da API. Gere novamente e reinstale o APK após alterar essas variáveis. Mantenha `SUPABASE_SERVICE_ROLE_KEY` somente nas variáveis server-side da Vercel.
 
 Adicione `https://localhost` à lista de URLs de redirecionamento do Supabase Auth. Configure `VITE_API_URL` com o domínio Vercel público para os endpoints administrativos, sandbox e pagamentos. Gere um APK de depuração instalável com:
 
