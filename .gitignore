@@ -1,6 +1,7 @@
 node_modules
 data/
 storage/
+/release/linux-unpacked/
 .env
 .env.*
 !.env.example
