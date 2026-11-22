@@ -16,7 +16,18 @@ O cliente não usa nem deve receber uma chave `service_role`/secret. Nunca expon
 
 O `.env` local não é enviado automaticamente para a Vercel. Em **Project Settings → Environment Variables**, configure `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` para Production (e Preview, se necessário) e faça um novo deployment, pois o Vite incorpora esses valores durante o build. Ajuste também **Supabase → Authentication → URL Configuration**: use o domínio de produção como Site URL e inclua os domínios de produção/preview nas Redirect URLs.
 
-`VITE_PUBLIC_APP_URL` deve apontar para o domínio público para gerar links de compartilhamento corretos no APK. `VITE_API_URL` aponta para a API Node pública; a hospedagem estática da Vercel não inicia automaticamente `server/index.mjs`, que precisa estar hospedado como serviço de API e receber `SUPABASE_URL`, `SUPABASE_SECRET_KEY` e `WEB_ORIGIN` somente no servidor. Use `pnpm build` com saída em `dist`.
+`VITE_PUBLIC_APP_URL` deve apontar para o domínio público para gerar links de compartilhamento corretos no APK. O frontend e as rotas serverless da API podem ser implantados juntos no mesmo projeto Vercel: `api/[...route].mjs` encaminha `/api/*` para o Express e `VITE_API_URL` pode ficar vazio no site para usar a mesma origem. Configure o runtime Node.js 24 no projeto Vercel.
+
+Em **Project Settings → Environment Variables** da Vercel, configure também no ambiente de produção:
+
+- `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` (somente server-side; nunca prefixe com `VITE_`);
+- `WEB_ORIGIN` com a origem HTTPS do frontend;
+- `PUBLIC_APP_URL` e `PUBLIC_API_URL`, ambos com o domínio HTTPS do projeto Vercel;
+- `MERCADOPAGO_CLIENT_ID`, `MERCADOPAGO_CLIENT_SECRET`, `MERCADOPAGO_REDIRECT_URI` (`https://SEU-DOMINIO/api/payments/mercadopago/oauth/callback`), `MERCADOPAGO_TOKEN_ENCRYPTION_KEY` e `MERCADOPAGO_WEBHOOK_SECRET`.
+
+Gere `MERCADOPAGO_TOKEN_ENCRYPTION_KEY` localmente com `openssl rand -base64 32`. Cadastre no Mercado Pago o mesmo callback OAuth e o webhook `https://SEU-DOMINIO/api/payments/webhook`. Aplique a migration `20261122214000_payment_checkout.sql` no Supabase e faça um novo deploy depois de configurar variáveis.
+
+As rotas legadas de autenticação/CRUD que usam SQLite ou arquivos locais não são duráveis em funções serverless e retornam HTTP 410 na Vercel. O app usa Supabase Auth/Storage/Postgres para essas operações. No **Configurações → Explorador de API**, é possível ver as rotas e executar testes de leitura, além de criar, ler, atualizar e excluir um projeto de teste real na própria conta. Para o APK, configure `VITE_API_URL` com o domínio público da Vercel, pois a origem do WebView é diferente.
 
 Uploads aceitam qualquer tipo de arquivo até 100 MB e ficam em bucket privado. O sandbox baixa apenas arquivos de até 2 MB para prévia: HTML é sanitizado e mostrado sem scripts, JavaScript roda em Web Worker dentro de iframe isolado, CSS é aplicado a uma prévia restrita e outros formatos de texto são somente leitura. Arquivos nativos/binários não são executados. O produto ainda não fornece análise antivírus; não confie no selo de segurança como substituto de uma análise.
 
@@ -24,13 +35,13 @@ O esquema é versionado em `supabase/migrations/`. A aplicação da migração a
 
 ## Sandbox público, categorias e pagamentos
 
-O botão de sandbox aparece no detalhe de projetos com arquivo, inclusive para visitantes. A API Node precisa de `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` no servidor para emitir links temporários de leitura; a chave secreta nunca é usada no app. Arquivos individuais têm limite de prévia de 2 MB; ZIPs têm limite de 25 MB e 300 arquivos/25 MB descompactados. ZIPs com `index.html`/`app.html` abrem em iframe isolado; `main.py`/`app.py` rodam em Pyodide local. `requirements.txt`, `package.json` e scripts de build não são instalados/executados. Ruby e outros códigos sem runtime embutido ficam em modo de leitura.
+O botão de sandbox aparece no detalhe de projetos com arquivo, inclusive para visitantes. A função serverless da Vercel precisa de `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` para emitir links temporários de leitura; a chave secreta nunca é usada no app. Arquivos individuais têm limite de prévia de 2 MB; ZIPs têm limite de 25 MB e 300 arquivos/25 MB descompactados. ZIPs com `index.html`/`app.html` abrem em iframe isolado; `main.py`/`app.py` rodam em Pyodide local. `requirements.txt`, `package.json` e scripts de build não são instalados/executados. Ruby e outros códigos sem runtime embutido ficam em modo de leitura.
 
 Se a tela mostrar que a API não reconhece a rota do sandbox, reinicie o processo Node (`pnpm dev:full` no desenvolvimento); o servidor API não aplica alterações de rota por hot reload. Se a rota responder que a prévia precisa ser configurada, defina as credenciais Supabase no servidor antes de usar a prévia pública.
 
 Categorias e filtros de preço podem ser combinados em **Explorar**. Compras e doações usam o checkout hospedado do Mercado Pago, que apresenta os meios habilitados para cada recebedor (PIX, cartões, boleto e outros). O pagador autoriza no provedor, e o pagamento é criado usando o token OAuth do publicador conectado: o saldo é recebido diretamente na conta Mercado Pago dele, sem passar pela conta da plataforma e sem split do dev.io. Dados de cartão não passam pelo dev.io.
 
-Para configurar: crie uma aplicação Mercado Pago com OAuth e cadastre a URL de retorno exata `https://SUA-API/api/payments/mercadopago/oauth/callback`. Configure no servidor `MERCADOPAGO_CLIENT_ID`, `MERCADOPAGO_CLIENT_SECRET`, `MERCADOPAGO_REDIRECT_URI` (a mesma URL de callback), `MERCADOPAGO_TOKEN_ENCRYPTION_KEY` (chave base64 de 32 bytes), `MERCADOPAGO_WEBHOOK_SECRET`, `PUBLIC_API_URL` (URL HTTPS pública da API) e `PUBLIC_APP_URL` (URL HTTPS do frontend); no frontend, `VITE_API_URL` deve apontar para essa API. Gere a chave de criptografia com `openssl rand -base64 32`; mantenha todos esses segredos apenas no servidor. Configure no painel de integrações o webhook `https://SUA-API/api/payments/webhook`, habilite notificações de pagamentos e use o segredo de assinatura em `MERCADOPAGO_WEBHOOK_SECRET`.
+Para configurar: crie uma aplicação Mercado Pago com OAuth e cadastre a URL de retorno exata `https://SEU-DOMINIO/api/payments/mercadopago/oauth/callback`. Configure como variáveis server-side na Vercel `MERCADOPAGO_CLIENT_ID`, `MERCADOPAGO_CLIENT_SECRET`, `MERCADOPAGO_REDIRECT_URI` (a mesma URL de callback), `MERCADOPAGO_TOKEN_ENCRYPTION_KEY` (chave base64 de 32 bytes), `MERCADOPAGO_WEBHOOK_SECRET`, `PUBLIC_API_URL` e `PUBLIC_APP_URL` (ambas com o domínio HTTPS do projeto Vercel). No site, `VITE_API_URL` pode ficar vazio para usar a mesma origem; para APK, use a URL HTTPS Vercel. Gere a chave de criptografia com `openssl rand -base64 32`; mantenha todos esses segredos apenas no ambiente server-side. Configure no painel de integrações o webhook `https://SEU-DOMINIO/api/payments/webhook`, habilite notificações de pagamentos e use o segredo de assinatura em `MERCADOPAGO_WEBHOOK_SECRET`.
 
 Cada publicador conecta a própria conta em **Configurações → Recebimentos**. Só então o projeto pode iniciar pagamentos para aquela conta. Teste primeiro com contas e credenciais de teste do Mercado Pago. O webhook assinado é validado consultando a API usando a conta recebedora antes da aprovação; compras aprovadas entram na biblioteca. Execute a migration de pagamentos antes de habilitar o checkout.
 
@@ -51,7 +62,7 @@ O painel fica em **Configurações → Painel administrativo** e usa a conta nor
    ```
 
 3. Saia e entre novamente no app com essa conta para atualizar a sessão. Use o e-mail e a senha já cadastrados no Supabase; o projeto não cria credenciais administrativas padrão.
-4. Hospede a API Node e defina `VITE_API_URL` no frontend para habilitar o painel administrativo.
+4. As funções administrativas são implantadas com o mesmo projeto Vercel; mantenha os segredos Supabase no ambiente server-side e configure o runtime Node 24.
 
 O servidor valida o papel administrativo em cada rota. Bloquear um usuário impede novos logins e operações protegidas por RLS; bloquear uma submissão a oculta da listagem pública. Excluir uma submissão remove seu arquivo e registros da biblioteca; excluir um usuário remove a conta, perfil, submissões, itens da biblioteca e arquivos conhecidos do perfil. Administradores não podem excluir ou bloquear a própria conta nem outros administradores.
 
@@ -63,9 +74,9 @@ Os textos de Termos de Uso e Política de Privacidade aparecem nas respectivas t
 
 ## Aplicativo Android
 
-O app Android usa Capacitor para empacotar a interface web. Configure `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` no `.env` antes do build. Para links compartilháveis no APK, configure `VITE_PUBLIC_APP_URL` com a URL HTTPS pública do site. Para sandbox público e painel administrativo, defina `VITE_API_URL` com a URL HTTPS pública da API Node (ou use o alias `VITE_ADMIN_API_URL`). No servidor, configure `WEB_ORIGIN=https://localhost` para permitir o WebView Android e mantenha `SUPABASE_SERVICE_ROLE_KEY` somente no servidor. Se também houver um frontend web, inclua ambas as origens em `WEB_ORIGIN`, separadas por vírgula.
+O app Android usa Capacitor para empacotar a interface web. Configure `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` no `.env` antes do build. Para links compartilháveis no APK, configure `VITE_PUBLIC_APP_URL` com a URL HTTPS pública do site. Para sandbox, administração e pagamentos, defina `VITE_API_URL` com a URL HTTPS pública do projeto Vercel. Mantenha `SUPABASE_SERVICE_ROLE_KEY` somente nas variáveis server-side da Vercel.
 
-Adicione `https://localhost` à lista de URLs de redirecionamento do Supabase Auth. Gere um APK de depuração instalável com:
+Adicione `https://localhost` à lista de URLs de redirecionamento do Supabase Auth. Configure `VITE_API_URL` com o domínio Vercel público para os endpoints administrativos, sandbox e pagamentos. Gere um APK de depuração instalável com:
 
 ```bash
 pnpm install

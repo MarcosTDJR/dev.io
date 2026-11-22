@@ -57,6 +57,7 @@ import {
 } from "lucide-react"
 import { inspectProjectArchive } from "./sandbox/archive"
 import type { ArchivePreview } from "./sandbox/archive"
+import ApiExplorerScreen from "./components/ApiExplorerScreen"
 import {
   addToLibrary,
   changePassword,
@@ -131,6 +132,7 @@ type Screen =
   | "donate"
   | "payment-result"
   | "payment-account"
+  | "api-explorer"
   | "library"
   | "publish"
   | "security-check"
@@ -5744,6 +5746,7 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
         { icon: Moon, label: "Aparência", target: "appearance" as const },
         { icon: Globe, label: "Privacidade", target: "privacy" as const },
         { icon: CreditCard, label: "Recebimentos", target: "payment-account" as const },
+        { icon: Code2, label: "Explorador de API", target: "api-explorer" as const },
       ],
     },
     {
@@ -6881,6 +6884,8 @@ export default function App() {
         return <PaymentResultScreen orderId={paymentOrderId} navigate={navigate} />
       case "payment-account":
         return <PaymentAccountScreen navigate={navigate} />
+      case "api-explorer":
+        return <ApiExplorerScreen onBack={() => navigate("settings")} />
       case "library":
         return <LibraryScreen navigate={navigate} />
       case "publish":

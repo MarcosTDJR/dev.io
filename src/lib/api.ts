@@ -752,6 +752,32 @@ export function getPaymentOrder(orderId: string) {
   )
 }
 
+export async function testApiGet(path: string) {
+  if (!path.startsWith("/api/") || path.startsWith("//"))
+    throw new Error("Rota de API inválida.")
+  const { data, error } = await supabase.auth.getSession()
+  throwIfError(error)
+  const headers = new Headers()
+  if (data.session?.access_token)
+    headers.set("Authorization", `Bearer ${data.session.access_token}`)
+  const response = await fetch(`${apiBaseUrl()}${path}`, { headers })
+  const contentType = response.headers.get("content-type") || ""
+  const parsedBody: unknown = contentType.includes("application/json")
+    ? await response.json()
+    : await response.text()
+  const redact = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(redact)
+    if (!value || typeof value !== "object") return value
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        /token|secret|signed.?url/i.test(key) ? "[redigido]" : redact(item),
+      ]),
+    )
+  }
+  return { status: response.status, ok: response.ok, body: redact(parsedBody) }
+}
+
 export async function downloadProject(projectId: string) {
   const { data, error } = await supabase
     .from("projects")

@@ -11,9 +11,14 @@ import nodemailer from "nodemailer"
 import { createClient } from "@supabase/supabase-js"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const dataDirectory = process.env.DEVIO_DATA_DIR || path.join(root, "data")
+const runtimeDirectory = process.env.VERCEL
+  ? path.join("/tmp", "devio")
+  : root
+const dataDirectory =
+  process.env.DEVIO_DATA_DIR || path.join(runtimeDirectory, "data")
 const storageDirectory =
-  process.env.DEVIO_STORAGE_DIR || path.join(root, "storage", "projects")
+  process.env.DEVIO_STORAGE_DIR ||
+  path.join(runtimeDirectory, "storage", "projects")
 const avatarDirectory = path.join(storageDirectory, "avatars")
 const supabaseUrl = (
   process.env.SUPABASE_URL ||
@@ -373,7 +378,7 @@ function scanArchive(file) {
 
 const app = express()
 app.use(express.json({ limit: "1mb" }))
-if (process.env.NODE_ENV === "production")
+if (process.env.NODE_ENV === "production" && !process.env.VERCEL)
   app.use(express.static(path.join(root, "dist")))
 const allowedWebOrigins = (
   process.env.WEB_ORIGIN || "http://localhost:8443"
@@ -411,6 +416,31 @@ app.use((req, res, next) => {
   })
   next()
 })
+
+if (process.env.VERCEL) {
+  app.use("/api", (req, res, next) => {
+    const activeRoutes = [
+      /^\/health$/,
+      /^\/payments\/account$/,
+      /^\/payments\/account\/connect$/,
+      /^\/payments\/mercadopago\/oauth\/callback$/,
+      /^\/payments\/checkout$/,
+      /^\/payments\/orders\/[^/]+$/,
+      /^\/payments\/webhook$/,
+      /^\/admin\/(users|projects)$/,
+      /^\/admin\/users\/[^/]+\/block$/,
+      /^\/admin\/users\/[^/]+$/,
+      /^\/admin\/projects\/[^/]+\/(block|review)$/,
+      /^\/admin\/projects\/[^/]+$/,
+      /^\/projects\/[^/]+\/sandbox$/,
+    ]
+    if (activeRoutes.some((route) => route.test(req.path))) return next()
+    return res.status(410).json({
+      error:
+        "Esta rota pertence à API local legada. No Vercel, use as funções Supabase atuais do aplicativo.",
+    })
+  })
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -2010,9 +2040,13 @@ app.delete("/api/projects/:id", requireUser, (req, res) =>
   projectController.remove(req, res),
 )
 
-const port = Number(process.env.API_PORT || 8787)
-const server = app.listen(port, () =>
-  console.log(`dev.io API listening on http://localhost:${port}`),
-)
-server.ref()
-setInterval(() => {}, 60_000)
+const port = Number(process.env.PORT || process.env.API_PORT || 8787)
+if (!process.env.VERCEL) {
+  const server = app.listen(port, "0.0.0.0", () =>
+    console.log(`dev.io API listening on http://localhost:${port}`),
+  )
+  server.ref()
+  setInterval(() => {}, 60_000)
+}
+
+export { app }
