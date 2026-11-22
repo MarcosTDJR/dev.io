@@ -622,9 +622,10 @@ select {
   font-weight: 600;
 }
 
-.api-search-label input {
+.api-search-label input,
+.api-search-label select,
+.api-search-label textarea {
   width: 100%;
-  min-height: 40px;
   padding: 9px 11px;
   border: 1px solid var(--shell-border);
   border-radius: 10px;
@@ -632,6 +633,38 @@ select {
   color: var(--shell-text);
   font: inherit;
   font-size: 13px;
+}
+
+.api-search-label input,
+.api-search-label select {
+  min-height: 40px;
+}
+
+.api-search-label textarea {
+  min-height: 120px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.api-request-grid {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.3fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.api-execute-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.api-execute-row > span {
+  color: var(--shell-muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .api-route-list {
@@ -732,6 +765,33 @@ select {
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .api-request-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .api-execute-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .api-route-card {
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .api-method-badge {
+    min-width: 48px;
+    font-size: 9px;
+  }
+
+  .api-route-card > .api-secondary-button {
+    padding: 7px;
+    font-size: 10px;
+  }
 }
 
 .settings-link-row {

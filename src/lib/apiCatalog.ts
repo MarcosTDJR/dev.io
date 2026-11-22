@@ -10,6 +10,7 @@ export type ApiRouteInfo = {
   availability: ApiAvailability
   auth: string
   safeTestPath?: string
+  testBody?: string
 }
 
 export const apiRouteCatalog: ApiRouteInfo[] = [
@@ -38,6 +39,8 @@ export const apiRouteCatalog: ApiRouteInfo[] = [
     description: "Inicia a autorização OAuth do recebedor no Mercado Pago.",
     availability: "vercel",
     auth: "Sessão",
+    safeTestPath: "/api/payments/account/connect",
+    testBody: "{}",
   },
   {
     id: "payment-oauth-callback",
@@ -46,6 +49,7 @@ export const apiRouteCatalog: ApiRouteInfo[] = [
     description: "Recebe o retorno OAuth do Mercado Pago.",
     availability: "vercel",
     auth: "Mercado Pago",
+    safeTestPath: "/api/payments/mercadopago/oauth/callback",
   },
   {
     id: "payment-checkout",
@@ -54,6 +58,8 @@ export const apiRouteCatalog: ApiRouteInfo[] = [
     description: "Cria checkout de compra ou doação na conta do publicador.",
     availability: "vercel",
     auth: "Sessão",
+    safeTestPath: "/api/payments/checkout",
+    testBody: '{\n  "projectId": "",\n  "kind": "donation",\n  "amount": 1\n}',
   },
   {
     id: "payment-order",
@@ -71,6 +77,9 @@ export const apiRouteCatalog: ApiRouteInfo[] = [
     description: "Recebe e valida notificações assinadas do Mercado Pago.",
     availability: "vercel",
     auth: "Mercado Pago",
+    safeTestPath: "/api/payments/webhook",
+    testBody:
+      '{\n  "type": "payment",\n  "data": { "id": "test-payment-id" }\n}',
   },
   {
     id: "admin-users-list",
@@ -97,6 +106,8 @@ export const apiRouteCatalog: ApiRouteInfo[] = [
     description: "Bloqueia ou desbloqueia uma conta de usuário.",
     availability: "vercel",
     auth: "Administrador",
+    safeTestPath: "/api/admin/users/:id/block",
+    testBody: '{\n  "blocked": false\n}',
   },
   {
     id: "admin-user-delete",
@@ -105,6 +116,7 @@ export const apiRouteCatalog: ApiRouteInfo[] = [
     description: "Remove uma conta e os dados associados.",
     availability: "vercel",
     auth: "Administrador",
+    safeTestPath: "/api/admin/users/:id",
   },
   {
     id: "admin-project-delete",
@@ -113,6 +125,7 @@ export const apiRouteCatalog: ApiRouteInfo[] = [
     description: "Remove um projeto e seu arquivo.",
     availability: "vercel",
     auth: "Administrador",
+    safeTestPath: "/api/admin/projects/:id",
   },
   {
     id: "admin-project-block",
@@ -121,6 +134,8 @@ export const apiRouteCatalog: ApiRouteInfo[] = [
     description: "Bloqueia ou desbloqueia um projeto.",
     availability: "vercel",
     auth: "Administrador",
+    safeTestPath: "/api/admin/projects/:id/block",
+    testBody: '{\n  "blocked": false\n}',
   },
   {
     id: "admin-project-review",
@@ -129,6 +144,9 @@ export const apiRouteCatalog: ApiRouteInfo[] = [
     description: "Aprova ou recusa um projeto em análise.",
     availability: "vercel",
     auth: "Administrador",
+    safeTestPath: "/api/admin/projects/:id/review",
+    testBody:
+      '{\n  "status": "rejected",\n  "note": "Teste pelo explorador de API"\n}',
   },
   {
     id: "legacy-register",

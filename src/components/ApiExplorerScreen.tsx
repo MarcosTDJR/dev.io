@@ -2,13 +2,14 @@ import { useEffect, useMemo, useState } from "react"
 import { CheckCircle, CircleAlert, Play, RefreshCw, Trash2 } from "lucide-react"
 import {
   deleteProject,
+  executeApiRequest,
   getMyProjects,
-  testApiGet,
   updateProject,
   uploadProject,
 } from "../lib/api"
 import type { ApiProject } from "../lib/api"
 import { apiRouteCatalog } from "../lib/apiCatalog"
+import type { ApiMethod } from "../lib/apiCatalog"
 
 const testProjectPrefix = "[API CRUD TEST]"
 
@@ -24,7 +25,10 @@ function displayAvailability(availability: string) {
 
 export default function ApiExplorerScreen({ onBack }: Props) {
   const [query, setQuery] = useState("")
-  const [idInput, setIdInput] = useState("")
+  const [selectedRouteId, setSelectedRouteId] = useState("health")
+  const [requestMethod, setRequestMethod] = useState<ApiMethod>("GET")
+  const [requestPath, setRequestPath] = useState("/api/health")
+  const [requestBody, setRequestBody] = useState("")
   const [requestResult, setRequestResult] = useState("")
   const [requestError, setRequestError] = useState("")
   const [runningRouteId, setRunningRouteId] = useState("")
@@ -44,6 +48,9 @@ export default function ApiExplorerScreen({ onBack }: Props) {
         .includes(normalized),
     )
   }, [query])
+  const selectedRoute = apiRouteCatalog.find(
+    (route) => route.id === selectedRouteId,
+  )
 
   const refreshProjects = async (showReadResult = true) => {
     setCrudError("")
@@ -53,13 +60,23 @@ export default function ApiExplorerScreen({ onBack }: Props) {
         project.name.startsWith(testProjectPrefix),
       )
       setProjects(tests)
-      if (showReadResult)
-        setCrudResult(`READ concluído: ${tests.length} projeto(s) de teste.`)
       setSelectedProjectId((current) =>
         tests.some((project) => project.id === current)
           ? current
           : String(tests[0]?.id || ""),
       )
+      if (showReadResult)
+        setCrudResult(
+          JSON.stringify(
+            {
+              operation: "READ",
+              count: tests.length,
+              projects: tests,
+            },
+            null,
+            2,
+          ),
+        )
     } catch (reason) {
       setCrudError(
         reason instanceof Error
@@ -75,24 +92,60 @@ export default function ApiExplorerScreen({ onBack }: Props) {
     void refreshProjects()
   }, [])
 
-  const runRouteTest = async (routeId: string, safeTestPath: string) => {
-    let path = safeTestPath
-    if (path.includes(":id")) {
-      if (!idInput.trim()) {
-        setRequestError("Informe o ID solicitado para testar esta rota.")
-        setRequestResult("")
+  const selectRoute = (routeId: string) => {
+    const route = apiRouteCatalog.find((item) => item.id === routeId)
+    if (!route) return
+    setSelectedRouteId(route.id)
+    setRequestMethod(route.method)
+    setRequestPath(route.safeTestPath || route.path)
+    setRequestBody(route.testBody || "")
+    setRequestError("")
+    setRequestResult("")
+  }
+
+  const runRouteTest = async () => {
+    if (!selectedRoute || selectedRoute.availability !== "vercel") {
+      setRequestError("Esta rota não está implantada como função Vercel.")
+      return
+    }
+    if (!requestPath.startsWith("/api/") || requestPath.startsWith("//")) {
+      setRequestError("Informe um caminho válido iniciado por /api/.")
+      return
+    }
+    if (requestMethod !== "GET" && requestBody.trim()) {
+      try {
+        JSON.parse(requestBody)
+      } catch {
+        setRequestError("O body precisa ser um JSON válido.")
         return
       }
-      path = path.split(":id").join(encodeURIComponent(idInput.trim()))
     }
-    setRunningRouteId(routeId)
+    if (
+      requestMethod !== "GET" &&
+      !window.confirm(
+        `Executar ${requestMethod} ${requestPath}? Esta chamada pode alterar dados reais ou iniciar um checkout.`,
+      )
+    )
+      return
+
+    setRunningRouteId(selectedRoute.id)
     setRequestError("")
     setRequestResult("")
     try {
-      const result = await testApiGet(path)
+      const result = await executeApiRequest(
+        requestMethod,
+        requestPath,
+        requestBody.trim() || undefined,
+      )
       setRequestResult(
         JSON.stringify(
-          { method: "GET", path, status: result.status, body: result.body },
+          {
+            method: requestMethod,
+            path: requestPath,
+            status: result.status,
+            ok: result.ok,
+            body: result.body,
+          },
           null,
           2,
         ),
@@ -131,7 +184,7 @@ export default function ApiExplorerScreen({ onBack }: Props) {
       )
       await refreshProjects(false)
       setSelectedProjectId(String(project.id))
-      setCrudResult(`CREATE concluído: projeto ${project.id}`)
+      setCrudResult(JSON.stringify({ operation: "CREATE", project }, null, 2))
     } catch (reason) {
       setCrudError(
         reason instanceof Error
@@ -160,7 +213,9 @@ export default function ApiExplorerScreen({ onBack }: Props) {
         price: "",
       })
       await refreshProjects(false)
-      setCrudResult(`UPDATE concluído: projeto ${updated.id}`)
+      setCrudResult(
+        JSON.stringify({ operation: "UPDATE", project: updated }, null, 2),
+      )
     } catch (reason) {
       setCrudError(
         reason instanceof Error
@@ -189,7 +244,13 @@ export default function ApiExplorerScreen({ onBack }: Props) {
     try {
       await deleteProject(String(project.id))
       await refreshProjects(false)
-      setCrudResult(`DELETE concluído: projeto ${project.id}`)
+      setCrudResult(
+        JSON.stringify(
+          { operation: "DELETE", ok: true, deletedProjectId: project.id },
+          null,
+          2,
+        ),
+      )
     } catch (reason) {
       setCrudError(
         reason instanceof Error
@@ -294,9 +355,9 @@ export default function ApiExplorerScreen({ onBack }: Props) {
             </div>
           )}
           {crudResult && (
-            <div className="api-feedback is-success" role="status">
-              <CheckCircle size={16} /> {crudResult}
-            </div>
+            <pre className="api-response" aria-live="polite">
+              {crudResult}
+            </pre>
           )}
           <div className="api-muted-note">
             CREATE/READ/UPDATE/DELETE executam as funções reais da aplicação.
@@ -309,7 +370,15 @@ export default function ApiExplorerScreen({ onBack }: Props) {
           <div className="api-section-heading">
             <div>
               <h2>Rotas disponíveis</h2>
-              <p>{apiRouteCatalog.length} rotas registradas no projeto.</p>
+              <p>
+                {apiRouteCatalog.length} rotas no catálogo;{" "}
+                {
+                  apiRouteCatalog.filter(
+                    (route) => route.availability === "vercel",
+                  ).length
+                }{" "}
+                executáveis no Vercel.
+              </p>
             </div>
           </div>
           <label className="api-search-label">
@@ -321,13 +390,84 @@ export default function ApiExplorerScreen({ onBack }: Props) {
             />
           </label>
           <label className="api-search-label">
-            ID de recurso para rotas com :id
-            <input
-              value={idInput}
-              onChange={(event) => setIdInput(event.target.value)}
-              placeholder="UUID do projeto ou pedido"
-            />
+            Rota para testar
+            <select
+              value={selectedRouteId}
+              onChange={(event) => selectRoute(event.target.value)}
+            >
+              {apiRouteCatalog.map((route) => (
+                <option
+                  key={route.id}
+                  value={route.id}
+                  disabled={route.availability !== "vercel"}
+                >
+                  {route.method} {route.path} —{" "}
+                  {displayAvailability(route.availability)}
+                </option>
+              ))}
+            </select>
           </label>
+          <div className="api-request-grid">
+            <label className="api-search-label">
+              Método
+              <select
+                value={requestMethod}
+                onChange={(event) =>
+                  setRequestMethod(event.target.value as ApiMethod)
+                }
+              >
+                {(["GET", "POST", "PUT", "PATCH", "DELETE"] as const).map(
+                  (method) => (
+                    <option key={method} value={method}>
+                      {method}
+                    </option>
+                  ),
+                )}
+              </select>
+            </label>
+            <label className="api-search-label">
+              Caminho (edite os parâmetros :id)
+              <input
+                value={requestPath}
+                onChange={(event) => setRequestPath(event.target.value)}
+                placeholder="/api/projects/uuid/sandbox"
+                spellCheck={false}
+              />
+            </label>
+          </div>
+          {requestMethod !== "GET" && (
+            <label className="api-search-label">
+              Body JSON (opcional)
+              <textarea
+                value={requestBody}
+                onChange={(event) => setRequestBody(event.target.value)}
+                placeholder={'{\n  "campo": "valor"\n}'}
+                rows={6}
+                spellCheck={false}
+              />
+            </label>
+          )}
+          <div className="api-execute-row">
+            <button
+              type="button"
+              className="api-primary-button"
+              onClick={() => void runRouteTest()}
+              disabled={
+                Boolean(runningRouteId) ||
+                !selectedRoute ||
+                selectedRoute.availability !== "vercel"
+              }
+            >
+              <Play size={15} />
+              {runningRouteId ? "Executando..." : `Executar ${requestMethod}`}
+            </button>
+            {selectedRoute && (
+              <span>
+                Autorização: {selectedRoute.auth}. Respostas exibem status HTTP
+                e body retornado pelo servidor.
+              </span>
+            )}
+          </div>
           <div className="api-route-list">
             {filteredRoutes.map((route) => (
               <article className="api-route-card" key={route.id}>
@@ -344,17 +484,14 @@ export default function ApiExplorerScreen({ onBack }: Props) {
                     <span>{displayAvailability(route.availability)}</span>
                   </div>
                 </div>
-                {route.safeTestPath && (
+                {route.availability === "vercel" && (
                   <button
                     type="button"
-                    className="api-icon-button"
-                    onClick={() =>
-                      void runRouteTest(route.id, route.safeTestPath!)
-                    }
+                    className="api-secondary-button"
+                    onClick={() => selectRoute(route.id)}
                     disabled={Boolean(runningRouteId)}
-                    aria-label={`Testar ${route.method} ${route.path}`}
                   >
-                    <Play size={15} />
+                    Selecionar
                   </button>
                 )}
               </article>
@@ -376,9 +513,9 @@ export default function ApiExplorerScreen({ onBack }: Props) {
             </pre>
           )}
           <div className="api-muted-note">
-            Rotas administrativas exigem a sessão de administrador. Rotas “Local
-            legado” usam SQLite/arquivos locais e não são implantadas no Vercel;
-            o app usa as operações Supabase equivalentes.
+            Chamadas POST/PUT/PATCH/DELETE pedem confirmação antes de executar.
+            Rotas administrativas exigem sessão de administrador. Rotas “Local
+            legado” usam SQLite/arquivos locais e não são implantadas no Vercel.
           </div>
         </section>
       </div>

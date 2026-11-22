@@ -53,6 +53,7 @@ create policy "Buyers can read their payment orders"
   using (buyer_id = (select auth.uid()));
 
 drop policy if exists "Users can save projects to their library" on public.library;
+drop policy if exists "Users can save free projects to their library" on public.library;
 create policy "Users can save free projects to their library"
   on public.library for insert to authenticated
   with check (
