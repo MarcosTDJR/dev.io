@@ -10,8 +10,6 @@ import {
   ChevronRight,
   ChevronLeft,
   X,
-  Star,
-  Download,
   Heart,
   Share2,
   Shield,
@@ -48,7 +46,6 @@ import {
   Send,
   DollarSign,
   CreditCard,
-  Loader,
   RefreshCw,
   TrendingUp,
   Users,
@@ -65,6 +62,9 @@ import {
   getCurrentUser,
   getLibrary,
   getMyProjects,
+  getProjectFile,
+  getProjects,
+  hasActiveSession,
   logoutAccount,
   loginAccount,
   loginGoogle,
@@ -80,7 +80,7 @@ import {
 import type { ApiProject, ProfileUser } from "./lib/api"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-type Screen = "splash" | "login" | "register" | "email-confirmation" | "password-reset" | "password-change" | "home" | "explore" | "search" | "project-detail" | "acquire" | "acquire-success" | "donate" | "library" | "publish" | "security-check" | "security-blocked" | "my-projects" | "profile" | "profile-edit" | "settings" | "report"
+type Screen = "splash" | "login" | "register" | "email-confirmation" | "password-reset" | "password-change" | "home" | "explore" | "search" | "project-detail" | "acquire" | "acquire-success" | "donate" | "library" | "publish" | "security-check" | "security-blocked" | "sandbox" | "my-projects" | "profile" | "profile-edit" | "settings" | "report"
 
 // ─── Shared colour tokens ─────────────────────────────────────────────────────
 const C = {
@@ -101,130 +101,94 @@ const C = {
   text3: "#55557a",
 }
 
-// ─── Sample data ──────────────────────────────────────────────────────────────
-const PROJECTS = [
-  {
-    id: 1,
-    name: "DevTools React",
-    dev: "marcos_dev",
-    category: "Ferramentas",
-    price: "Grátis",
-    rating: 4.8,
-    downloads: 12400,
-    tech: ["React", "TypeScript"],
-    version: "2.1.0",
-    updated: "12 set 2026",
-    verified: true,
-    desc: "Suite completa de ferramentas de desenvolvimento para projetos React. Inclui debugger, profiler e muito mais.",
-  },
-  {
-    id: 2,
-    name: "API Helper",
-    dev: "luisa_code",
-    category: "Bibliotecas",
-    price: "R$ 9,90",
-    rating: 4.6,
-    downloads: 8700,
-    tech: ["Node.js", "REST"],
-    version: "1.4.2",
-    updated: "5 set 2026",
-    verified: true,
-    desc: "Biblioteca para construção e teste de APIs REST com facilidade.",
-  },
-  {
-    id: 3,
-    name: "UI Components",
-    dev: "studio_pixel",
-    category: "Bibliotecas",
-    price: "Grátis",
-    rating: 4.9,
-    downloads: 31000,
-    tech: ["Vue", "CSS"],
-    version: "3.0.1",
-    updated: "1 set 2026",
-    verified: true,
-    desc: "Componentes de UI modernos e acessíveis para Vue 3.",
-  },
-  {
-    id: 4,
-    name: "CodeSnap",
-    dev: "rafael_ti",
-    category: "Aplicativos",
-    price: "Grátis",
-    rating: 4.5,
-    downloads: 5200,
-    tech: ["Electron", "JS"],
-    version: "1.2.0",
-    updated: "20 ago 2026",
-    verified: true,
-    desc: "Gere screenshots bonitas do seu código para compartilhar.",
-  },
-  {
-    id: 5,
-    name: "FluxDB",
-    dev: "ana_backend",
-    category: "Ferramentas",
-    price: "R$ 19,90",
-    rating: 4.7,
-    downloads: 9100,
-    tech: ["Rust", "SQL"],
-    version: "0.9.5",
-    updated: "15 ago 2026",
-    verified: false,
-    desc: "Banco de dados embarcado ultrarrápido para aplicações desktop.",
-  },
-  {
-    id: 6,
-    name: "GitFlow Plugin",
-    dev: "devstudio_br",
-    category: "Plugins",
-    price: "Grátis",
-    rating: 4.4,
-    downloads: 22000,
-    tech: ["VS Code"],
-    version: "1.8.3",
-    updated: "10 ago 2026",
-    verified: true,
-    desc: "Plugin para VS Code que automatiza fluxo GitFlow.",
-  },
-]
-
-type Project = Omit<typeof PROJECTS[number], "id"> & {
-  id: string | number
+type Project = {
+  id: string
+  name: string
+  dev: string
+  category: string
+  price: string
+  version: string
+  updated: string
+  desc: string
   fileName?: string
-  downloadUrl?: string
-  hasPreview?: boolean
+  fileType?: string
+  sandboxType?: string
 }
 
-function normalizeProject(value: Record<string, unknown>): Project {
-  const fallback = PROJECTS[0]
+function normalizeProject(value: ApiProject): Project {
   return {
-    id:
-      typeof value.id === "string" || typeof value.id === "number"
-        ? value.id
-        : fallback.id,
-    name: typeof value.name === "string" ? value.name : fallback.name,
-    dev: typeof value.dev === "string" ? value.dev : fallback.dev,
-    category:
-      typeof value.category === "string" ? value.category : fallback.category,
-    price: typeof value.price === "string" ? value.price : fallback.price,
-    rating: typeof value.rating === "number" ? value.rating : 0,
-    downloads: typeof value.downloads === "number" ? value.downloads : 0,
-    tech: Array.isArray(value.tech)
-      ? value.tech.filter((item): item is string => typeof item === "string")
-      : [],
-    version:
-      typeof value.version === "string" ? value.version : fallback.version,
-    updated:
-      typeof value.updated === "string" ? value.updated : fallback.updated,
-    verified: typeof value.verified === "boolean" ? value.verified : false,
-    desc: typeof value.desc === "string" ? value.desc : fallback.desc,
+    id: typeof value.id === "string" ? value.id : "",
+    name: typeof value.name === "string" ? value.name : "",
+    dev: typeof value.dev === "string" ? value.dev : "devio",
+    category: typeof value.category === "string" ? value.category : "Outros",
+    price: typeof value.price === "string" ? value.price : "Grátis",
+    version: typeof value.version === "string" ? value.version : "",
+    updated: typeof value.updated === "string" ? value.updated : "",
+    desc: typeof value.desc === "string" ? value.desc : "",
     fileName: typeof value.fileName === "string" ? value.fileName : undefined,
-    downloadUrl:
-      typeof value.downloadUrl === "string" ? value.downloadUrl : undefined,
-    hasPreview:
-      typeof value.hasPreview === "boolean" ? value.hasPreview : false,
+    fileType: typeof value.fileType === "string" ? value.fileType : undefined,
+    sandboxType: typeof value.sandboxType === "string" ? value.sandboxType : undefined,
   }
+}
+
+function startProjectDownload(projectId: string) {
+  void downloadProject(projectId).catch((reason) => {
+    window.alert(
+      reason instanceof Error ? reason.message : "Não foi possível baixar o arquivo.",
+    )
+  })
+}
+
+type SandboxType = "auto" | "html" | "javascript" | "css" | "source" | "unsupported"
+
+function detectSandboxType(fileName: string, mimeType = ""): SandboxType {
+  const extension = fileName.split(".").pop()?.toLowerCase() || ""
+  if (["html", "htm"].includes(extension) || mimeType === "text/html") return "html"
+  if (
+    ["js", "mjs", "cjs", "jsx"].includes(extension) ||
+    ["application/javascript", "text/javascript", "application/x-javascript"].includes(mimeType)
+  ) return "javascript"
+  if (extension === "css" || mimeType === "text/css") return "css"
+  if (
+    ["txt", "md", "json", "ts", "tsx", "py", "java", "c", "h", "cpp", "hpp", "rs", "go", "sh", "xml", "yaml", "yml", "sql", "php", "rb", "swift", "kt", "dart"].includes(extension) ||
+    mimeType.startsWith("text/") ||
+    ["application/json", "application/xml"].includes(mimeType)
+  ) return "source"
+  return "unsupported"
+}
+
+function sandboxTypeLabel(type: SandboxType) {
+  return {
+    auto: "Detecção automática",
+    html: "HTML",
+    javascript: "JavaScript",
+    css: "CSS",
+    source: "Texto/código (somente leitura)",
+    unsupported: "Formato não executável no navegador",
+  }[type]
+}
+
+function usePublicProjects() {
+  const [projects, setProjects] = useState<Project[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    getProjects()
+      .then(({ projects: rows }) =>
+        setProjects(rows.map(normalizeProject)),
+      )
+      .catch((reason) =>
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Não foi possível carregar os projetos.",
+        ),
+      )
+      .finally(() => setLoading(false))
+  }, [])
+
+  return { projects, loading, error }
 }
 
 const CATEGORIES = [
@@ -374,17 +338,6 @@ function Input({
   )
 }
 
-function StarRating({ rating }: { rating: number }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
-      <Star size={12} fill={C.warning} color={C.warning} />
-      <span style={{ fontSize: 12, color: C.text2, fontWeight: 500 }}>
-        {rating}
-      </span>
-    </span>
-  )
-}
-
 function Badge({
   label,
   color = C.primary,
@@ -488,8 +441,6 @@ function ProjectCard({
           }}
         >
           <Badge label={project.category} color={C.primary} />
-          <StarRating rating={project.rating} />
-          {project.verified && <Shield size={11} color={C.success} />}
         </div>
       </div>
     </div>
@@ -633,11 +584,20 @@ function Header({
 }
 
 // ─── SCREEN: Splash ──────────────────────────────────────────────────────────
-function SplashScreen({ navigate }: { navigate: (s: Screen) => void }) {
+function SplashScreen({
+  navigate,
+  authLoaded,
+  error,
+}: {
+  navigate: (s: Screen) => void
+  authLoaded: boolean
+  error: string
+}) {
   useEffect(() => {
+    if (!authLoaded) return
     const t = setTimeout(() => navigate("login"), 2600)
     return () => clearTimeout(t)
-  }, [])
+  }, [authLoaded])
   return (
     <div
       style={{
@@ -758,6 +718,11 @@ function SplashScreen({ navigate }: { navigate: (s: Screen) => void }) {
           />
         ))}
       </div>
+      {error && (
+        <div style={{ color: C.warning, fontSize: 12, marginTop: 16 }}>
+          {error}
+        </div>
+      )}
       <style>{`@keyframes pulse { 0%,80%,100%{opacity:.3;transform:scale(0.8)} 40%{opacity:1;transform:scale(1.2)} }`}</style>
     </div>
   )
@@ -1016,11 +981,6 @@ function RegisterScreen({ navigate }: { navigate: (s: Screen) => void }) {
     setError("")
     try {
       const response = await registerAccount(form)
-      if (response.confirmationToken)
-        sessionStorage.setItem(
-          "devio_confirmation_token",
-          response.confirmationToken,
-        )
       sessionStorage.setItem(
         "devio_pending_email",
         form.email.trim().toLowerCase(),
@@ -1181,19 +1141,21 @@ function EmailConfirmationScreen({
   )
   const [token, setToken] = useState(
     () =>
+      new URLSearchParams(window.location.search).get("token_hash") ||
+      new URLSearchParams(window.location.hash.slice(1)).get("token_hash") ||
       new URLSearchParams(window.location.hash.slice(1)).get("confirmEmail") ||
       sessionStorage.getItem("devio_confirmation_token") ||
       "",
   )
   const confirm = async () => {
-    if (!token) {
-      setError("Abra o link recebido por e-mail ou solicite um novo.")
-      return
-    }
     try {
-      await confirmEmail(token)
+      await confirmEmail(
+        token,
+        sessionStorage.getItem("devio_pending_email") || undefined,
+      )
       sessionStorage.removeItem("devio_confirmation_token")
       sessionStorage.removeItem("devio_pending_email")
+      sessionStorage.removeItem("devio_pending_email_change")
       sessionStorage.removeItem("devio_confirmation_email_sent")
       window.history.replaceState(null, "", window.location.pathname)
       setConfirmed(true)
@@ -1214,23 +1176,19 @@ function EmailConfirmationScreen({
     setResending(true)
     setError("")
     try {
-      const response = await resendConfirmation(email)
-      if (response.confirmationToken) {
-        sessionStorage.setItem(
-          "devio_confirmation_token",
-          response.confirmationToken,
-        )
-        setToken(response.confirmationToken)
-      }
+      const response = await resendConfirmation(
+        email,
+        sessionStorage.getItem("devio_pending_email_change") === "true",
+      )
       setDeliveryReady(response.emailSent)
       sessionStorage.setItem(
         "devio_confirmation_email_sent",
         String(response.emailSent),
       )
-      setResent(response.emailSent || Boolean(response.confirmationToken))
-      if (!response.emailSent && !response.confirmationToken) {
+      setResent(response.emailSent)
+      if (!response.emailSent) {
         setError(
-          "Não foi possível enviar o e-mail. Verifique a configuração SMTP do servidor.",
+          "Não foi possível enviar o e-mail. Verifique as configurações de autenticação do Supabase.",
         )
       }
     } catch (error) {
@@ -1288,10 +1246,8 @@ function EmailConfirmationScreen({
           }}
         >
           {deliveryReady
-            ? "Enviamos um link de confirmação para ativar sua conta. O link expira em 30 minutos."
-            : token
-              ? "Ambiente de desenvolvimento sem SMTP: use o botão abaixo para confirmar a conta. O token expira em 30 minutos."
-              : "O e-mail de confirmação não foi enviado. Verifique a configuração SMTP do servidor ou tente reenviar."}
+            ? "Enviamos um link de confirmação para ativar sua conta."
+            : "O e-mail de confirmação não foi enviado. Verifique as configurações de autenticação do Supabase ou tente reenviar."}
         </div>
         {error && (
           <div style={{ color: C.danger, fontSize: 12, marginBottom: 16 }}>
@@ -1302,9 +1258,7 @@ function EmailConfirmationScreen({
           label={
             confirmed
               ? "Continuar para o login"
-              : token
-                ? "Confirmar e-mail"
-                : "Já confirmei meu e-mail"
+              : "Já confirmei meu e-mail"
           }
           onClick={() => (confirmed ? navigate("login") : confirm())}
           full
@@ -1325,9 +1279,7 @@ function EmailConfirmationScreen({
           {resending
             ? "Enviando..."
             : resent
-              ? deliveryReady
-                ? "E-mail reenviado"
-                : "Token de teste renovado"
+              ? "E-mail reenviado"
               : "Reenviar e-mail"}
         </button>
       </div>
@@ -1341,7 +1293,11 @@ function PasswordResetScreen({ navigate }: { navigate: (s: Screen) => void }) {
   const [resetDone, setResetDone] = useState(false)
   const [token, setToken] = useState(
     () =>
+      new URLSearchParams(window.location.search).get("token_hash") ||
       new URLSearchParams(window.location.hash.slice(1)).get("resetPassword") ||
+      (new URLSearchParams(window.location.hash.slice(1)).get("type") === "recovery"
+        ? "recovery"
+        : "") ||
       sessionStorage.getItem("devio_reset_token") ||
       "",
   )
@@ -1357,11 +1313,7 @@ function PasswordResetScreen({ navigate }: { navigate: (s: Screen) => void }) {
     setLoading(true)
     setError("")
     try {
-      const response = await requestPasswordReset(email)
-      if (response.resetToken) {
-        sessionStorage.setItem("devio_reset_token", response.resetToken)
-        setToken(response.resetToken)
-      }
+      await requestPasswordReset(email)
       setRequestSent(true)
     } catch (error) {
       setError(
@@ -1655,6 +1607,7 @@ function HomeScreen({
 }: {
   navigate: (s: Screen, data?: unknown) => void
 }) {
+  const { projects, loading, error } = usePublicProjects()
   return (
     <div
       className="phone-scroll"
@@ -1676,7 +1629,7 @@ function HomeScreen({
         }}
       >
         <div>
-          <div style={{ fontSize: 12, color: C.text2 }}>Olá, Marcos 👋</div>
+          <div style={{ fontSize: 12, color: C.text2 }}>Olá, desenvolvedor 👋</div>
           <div style={{ fontSize: 22, fontWeight: 800, color: C.text }}>
             dev<span style={{ color: C.primary }}>.io</span>
           </div>
@@ -1756,7 +1709,7 @@ function HomeScreen({
               marginBottom: 4,
             }}
           >
-            Destaque da semana
+            {projects[0] ? "Projeto recente" : "Comece a compartilhar"}
           </div>
           <div
             style={{
@@ -1766,7 +1719,7 @@ function HomeScreen({
               marginBottom: 8,
             }}
           >
-            DevTools React v2.1
+            {projects[0]?.name || "Publique seu primeiro projeto"}
           </div>
           <div
             style={{
@@ -1775,11 +1728,15 @@ function HomeScreen({
               marginBottom: 14,
             }}
           >
-            Suite completa para devs React
+            {projects[0]?.desc || "Adicione um arquivo para compartilhar com a comunidade."}
           </div>
           <Btn
-            label="Ver projeto"
-            onClick={() => navigate("project-detail", PROJECTS[0])}
+            label={projects[0] ? "Ver projeto" : "Publicar projeto"}
+            onClick={() =>
+              projects[0]
+                ? navigate("project-detail", projects[0])
+                : navigate("publish")
+            }
             small
           />
         </div>
@@ -1837,7 +1794,7 @@ function HomeScreen({
 
       {/* Popular */}
       <SectionTitle
-        title="Populares"
+        title="Projetos publicados"
         action={{ label: "Ver todos", onClick: () => navigate("explore") }}
       />
       <div
@@ -1848,7 +1805,12 @@ function HomeScreen({
           gap: 10,
         }}
       >
-        {PROJECTS.slice(0, 3).map((p) => (
+        {loading && <div style={{ color: C.text2 }}>Carregando projetos...</div>}
+        {error && <div style={{ color: C.danger }}>{error}</div>}
+        {!loading && !error && projects.length === 0 && (
+          <div style={{ color: C.text2 }}>Ainda não há projetos publicados.</div>
+        )}
+        {projects.map((p) => (
           <ProjectCard
             key={p.id}
             project={p}
@@ -1857,27 +1819,6 @@ function HomeScreen({
         ))}
       </div>
 
-      {/* Recents */}
-      <SectionTitle
-        title="Novidades"
-        action={{ label: "Ver todos", onClick: () => navigate("explore") }}
-      />
-      <div
-        style={{
-          padding: "8px 20px 24px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
-        }}
-      >
-        {PROJECTS.slice(3).map((p) => (
-          <ProjectCard
-            key={p.id}
-            project={p}
-            onPress={() => navigate("project-detail", p)}
-          />
-        ))}
-      </div>
     </div>
   )
 }
@@ -1928,7 +1869,13 @@ function ExploreScreen({
   navigate: (s: Screen, data?: unknown) => void
 }) {
   const [activeFilter, setActiveFilter] = useState("Todos")
-  const filters = ["Todos", "Grátis", "Pagos", "Populares", "Recentes"]
+  const { projects, loading, error } = usePublicProjects()
+  const filters = ["Todos", "Grátis", "Pagos"]
+  const filteredProjects = projects.filter((project) => {
+    if (activeFilter === "Grátis") return project.price === "Grátis"
+    if (activeFilter === "Pagos") return project.price !== "Grátis"
+    return true
+  })
   return (
     <div
       className="phone-scroll"
@@ -2056,7 +2003,7 @@ function ExploreScreen({
       </div>
 
       {/* Projects */}
-      <SectionTitle title="Projetos" />
+      <SectionTitle title="Projetos publicados" />
       <div
         style={{
           padding: "8px 20px 24px",
@@ -2065,7 +2012,12 @@ function ExploreScreen({
           gap: 10,
         }}
       >
-        {PROJECTS.map((p) => (
+        {loading && <div style={{ color: C.text2 }}>Carregando projetos...</div>}
+        {error && <div style={{ color: C.danger }}>{error}</div>}
+        {!loading && !error && filteredProjects.length === 0 && (
+          <div style={{ color: C.text2 }}>Nenhum projeto encontrado.</div>
+        )}
+        {filteredProjects.map((p) => (
           <ProjectCard
             key={p.id}
             project={p}
@@ -2083,11 +2035,13 @@ function SearchScreen({
 }: {
   navigate: (s: Screen, data?: unknown) => void
 }) {
-  const [query, setQuery] = useState("React")
-  const results = PROJECTS.filter(
+  const [query, setQuery] = useState("")
+  const { projects, loading, error } = usePublicProjects()
+  const results = projects.filter(
     (p) =>
       p.name.toLowerCase().includes(query.toLowerCase()) ||
-      p.tech.some((t) => t.toLowerCase().includes(query.toLowerCase())),
+      p.category.toLowerCase().includes(query.toLowerCase()) ||
+      p.desc.toLowerCase().includes(query.toLowerCase()),
   )
   const inputRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
@@ -2184,7 +2138,15 @@ function SearchScreen({
           gap: 10,
         }}
       >
-        {results.length === 0 ? (
+        {loading ? (
+          <div style={{ color: C.text2, textAlign: "center", padding: 24 }}>
+            Carregando projetos...
+          </div>
+        ) : error ? (
+          <div style={{ color: C.danger, textAlign: "center", padding: 24 }}>
+            {error}
+          </div>
+        ) : results.length === 0 ? (
           <div
             style={{ textAlign: "center", padding: "40px 0", color: C.text3 }}
           >
@@ -2243,10 +2205,6 @@ function SearchScreen({
                 }}
               >
                 <Badge label={p.category} color={C.primary} />
-                {(p.tech ?? []).map((t) => (
-                  <Badge key={t} label={t} color={C.cyan} />
-                ))}
-                <StarRating rating={p.rating} />
               </div>
               <div
                 style={{
@@ -2362,51 +2320,10 @@ function ProjectDetailScreen({
           }}
         >
           <Badge label={project.category} color={C.primary} />
-          {(project.tech ?? []).map((t) => (
-            <Badge key={t} label={t} color={C.cyan} />
-          ))}
         </div>
 
-        {/* Stats */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr 1fr",
-            gap: 10,
-            marginBottom: 20,
-          }}
-        >
-          {[
-            {
-              label: "Avaliação",
-              value: `★ ${project.rating ?? 0}`,
-              color: C.warning,
-            },
-            {
-              label: "Downloads",
-              value: (project.downloads ?? 0).toLocaleString("pt-BR"),
-              color: C.primary,
-            },
-            { label: "Versão", value: `v${project.version}`, color: C.success },
-          ].map((s) => (
-            <div
-              key={s.label}
-              style={{
-                background: C.surface,
-                border: `1px solid ${C.border}`,
-                borderRadius: 12,
-                padding: "10px",
-                textAlign: "center",
-              }}
-            >
-              <div style={{ fontSize: 15, fontWeight: 700, color: s.color }}>
-                {s.value}
-              </div>
-              <div style={{ fontSize: 10, color: C.text3, marginTop: 2 }}>
-                {s.label}
-              </div>
-            </div>
-          ))}
+        <div style={{ marginBottom: 20 }}>
+          <Badge label={`Versão ${project.version}`} color={C.success} />
         </div>
 
         {/* Description */}
@@ -2461,11 +2378,11 @@ function ProjectDetailScreen({
                 marginBottom: 3,
               }}
             >
-              ✓ Verificado pelo dev.io
+              Arquivo armazenado pelo dev.io
             </div>
             <div style={{ fontSize: 11, color: C.text2, lineHeight: 1.5 }}>
-              Este arquivo passou pelo processo de verificação de segurança do
-              dev.io.
+              Arquivos enviados não são executados no servidor. Testes no navegador
+              usam um sandbox isolado e podem ser iniciados pelo proprietário.
             </div>
           </div>
         </div>
@@ -2482,7 +2399,7 @@ function ProjectDetailScreen({
             }
             onClick={() =>
               project.fileName
-                ? downloadProject(String(project.id))
+                ? startProjectDownload(String(project.id))
                 : navigate("acquire", project)
             }
             full
@@ -2552,7 +2469,7 @@ function AcquireScreen({
     setError("")
     try {
       await addToLibrary(String(project.id))
-      if (project.fileName) downloadProject(String(project.id))
+      if (project.fileName) startProjectDownload(String(project.id))
       navigate("acquire-success", project)
     } catch (reason) {
       setError(
@@ -3010,9 +2927,7 @@ function LibraryScreen({
     getLibrary()
       .then((response) =>
         setMyProjects(
-          response.projects.map((project) =>
-            normalizeProject(project as unknown as Record<string, unknown>),
-          ),
+          response.projects.map(normalizeProject),
         ),
       )
       .catch((reason) =>
@@ -3063,7 +2978,7 @@ function LibraryScreen({
               fontFamily: "Inter, sans-serif",
             }}
           >
-            {t === "Atualizações" ? `${t} (1)` : t}
+            {t}
           </button>
         ))}
       </div>
@@ -3143,16 +3058,16 @@ function LibraryScreen({
                     width: 7,
                     height: 7,
                     borderRadius: "50%",
-                    background: p.id === 3 ? C.warning : C.success,
+                    background: C.success,
                   }}
                 />
                 <span
                   style={{
                     fontSize: 11,
-                    color: p.id === 3 ? C.warning : C.success,
+                    color: C.success,
                   }}
                 >
-                  {p.id === 3 ? "Atualização disponível" : "Instalado"}
+                  Salvo na biblioteca
                 </span>
               </div>
             </div>
@@ -3178,6 +3093,7 @@ function PublishScreen({
     price: "",
   })
   const [acceptDonations, setAcceptDonations] = useState(false)
+  const [sandboxType, setSandboxType] = useState<SandboxType>("auto")
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState("")
   const [uploading, setUploading] = useState(false)
@@ -3187,7 +3103,7 @@ function PublishScreen({
   const publish = async () => {
     if (!form.name || !form.category || !form.version || !file) {
       setError(
-        "Informe nome, categoria, versão e selecione um arquivo .zip ou .tar.gz.",
+        "Informe nome, categoria, versão e selecione um arquivo.",
       )
       return
     }
@@ -3201,6 +3117,7 @@ function PublishScreen({
           category: form.category,
           version: form.version,
           price: form.price,
+          sandboxType,
         },
         file,
       )
@@ -3253,17 +3170,15 @@ function PublishScreen({
             style={{ flexShrink: 0, marginTop: 1 }}
           />
           <div style={{ fontSize: 12, color: C.text2, lineHeight: 1.6 }}>
-            Seu arquivo será analisado pelo{" "}
-            <strong style={{ color: C.primary }}>
-              sistema de segurança do dev.io
-            </strong>{" "}
-            antes de ser disponibilizado.
+            Arquivos ficam no armazenamento privado do Supabase. O dev.io não
+            executa uploads no servidor; testes compatíveis rodam em um iframe
+            isolado no seu navegador.
           </div>
         </div>
 
         <Input
           label="Nome do projeto"
-          placeholder="Ex: DevTools React"
+          placeholder="Nome do projeto"
           value={form.name}
           onChange={set("name")}
         />
@@ -3360,17 +3275,58 @@ function PublishScreen({
           <input
             ref={fileInputRef}
             type="file"
-            accept=".zip,.tar.gz,.tgz"
             hidden
-            onChange={(event) => setFile(event.target.files?.[0] || null)}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => {
+              const nextFile = event.target.files?.[0] || null
+              setFile(nextFile)
+              event.target.value = ""
+            }}
           />
           <Upload size={28} color={C.text3} style={{ marginBottom: 8 }} />
           <div style={{ fontSize: 13, color: C.text2 }}>
             {file ? file.name : "Clique para enviar arquivo"}
           </div>
           <div style={{ fontSize: 11, color: C.text3, marginTop: 4 }}>
-            .zip, .tar.gz — máx. 100MB
+            Qualquer tipo de arquivo — máx. 100 MB
           </div>
+          {file && (
+            <div style={{ fontSize: 11, color: C.primary, marginTop: 6 }}>
+              {sandboxType === "auto"
+                ? `Detectado: ${sandboxTypeLabel(detectSandboxType(file.name, file.type))}`
+                : `Tipo selecionado: ${sandboxTypeLabel(sandboxType)}`}
+            </div>
+          )}
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <label
+            htmlFor="sandbox-type"
+            style={{ display: "block", fontSize: 12, color: C.text2, marginBottom: 6 }}
+          >
+            Tipo para teste no sandbox
+          </label>
+          <select
+            id="sandbox-type"
+            value={sandboxType}
+            onChange={(event) => setSandboxType(event.target.value as SandboxType)}
+            style={{
+              width: "100%",
+              padding: "12px 14px",
+              background: C.surface2,
+              border: `1.5px solid ${C.border}`,
+              borderRadius: 12,
+              color: C.text,
+              fontSize: 14,
+              fontFamily: "Inter, sans-serif",
+            }}
+          >
+            <option value="auto">Detectar automaticamente</option>
+            <option value="html">HTML</option>
+            <option value="javascript">JavaScript</option>
+            <option value="css">CSS</option>
+            <option value="source">Texto/código (somente leitura)</option>
+          </select>
         </div>
 
         <div style={{ marginBottom: 16 }}>
@@ -3410,10 +3366,239 @@ function PublishScreen({
         </div>
 
         <Btn
-          label={uploading ? "Analisando arquivo..." : "Publicar projeto"}
+          label={uploading ? "Enviando arquivo..." : "Publicar projeto"}
           onClick={publish}
           full
         />
+      </div>
+    </div>
+  )
+}
+
+function sandboxDocument(type: SandboxType, source: string) {
+  const csp = (scripts: string, workers = "worker-src 'none'") =>
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${scripts}; ${workers}; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; navigate-to 'none'">`
+
+  if (type === "html") {
+    const parsed = new DOMParser().parseFromString(source, "text/html")
+    parsed
+      .querySelectorAll("script, iframe, object, embed, form, base")
+      .forEach((element) => element.remove())
+    parsed.querySelectorAll("meta[http-equiv]").forEach((element) => {
+      if (element.getAttribute("http-equiv")?.toLowerCase() === "refresh")
+        element.remove()
+    })
+    parsed.querySelectorAll("a[href], area[href]").forEach((element) => {
+      element.removeAttribute("href")
+    })
+    parsed.querySelectorAll("*").forEach((element) => {
+      for (const attribute of Array.from(element.attributes)) {
+        if (
+          attribute.name.toLowerCase().startsWith("on") ||
+          attribute.name.toLowerCase() === "srcdoc"
+        ) {
+          element.removeAttribute(attribute.name)
+        }
+      }
+    })
+    parsed.head.insertAdjacentHTML("afterbegin", csp("'none'"))
+    return `<!doctype html>${parsed.documentElement.outerHTML}`
+  }
+
+  const encodedSource = JSON.stringify(source).replace(/</g, "\\u003c")
+  const style = "body{font:14px sans-serif;padding:16px;color:#202030}"
+  if (type === "javascript") {
+    return `${csp("'unsafe-inline'", "worker-src blob:")}<style>${style}</style><pre id="output">JavaScript sandbox\n</pre><script>
+      const source = ${encodedSource};
+      const output = document.getElementById("output");
+      const code = 'self.console.log=(...values)=>postMessage(values.map(String).join(" "));try{\\n' + source + '\\n}catch(error){postMessage(String(error))}';
+      const workerUrl = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+      const worker = new Worker(workerUrl);
+      worker.onmessage = event => output.append(document.createTextNode(String(event.data) + "\\n"));
+      worker.onerror = event => output.append(document.createTextNode(event.message + "\\n"));
+      setTimeout(() => { worker.terminate(); URL.revokeObjectURL(workerUrl); output.append(document.createTextNode("Execução encerrada após 5 segundos.\\n")); }, 5000);
+    </script>`
+  }
+  if (type === "css") {
+    return `${csp("'none'")}<style>${style}\n${source}</style><main id="preview">Prévia de CSS</main>`
+  }
+  return ""
+}
+
+function ProjectSandboxScreen({
+  project,
+  navigate,
+}: {
+  project: Project
+  navigate: (s: Screen, data?: unknown) => void
+}) {
+  const [storedFile, setStoredFile] = useState<{
+    file: Blob | null
+    fileName: string
+    fileType: string
+  } | null>(null)
+  const [content, setContent] = useState("")
+  const [type, setType] = useState<SandboxType>(() => {
+    const requestedType = project.sandboxType as SandboxType | undefined
+    return requestedType && requestedType !== "auto"
+      ? requestedType
+      : detectSandboxType(project.fileName || "", project.fileType)
+  })
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    let active = true
+    getProjectFile(project.id)
+      .then((result) => {
+        if (active) {
+          setStoredFile(result)
+          if (project.sandboxType === "auto")
+            setType(detectSandboxType(result.fileName, result.fileType))
+        }
+      })
+      .catch((reason) => {
+        if (active)
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "Não foi possível carregar o arquivo.",
+          )
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [project.id])
+
+  useEffect(() => {
+    let active = true
+    if (!storedFile || !storedFile.file) {
+      setContent("")
+      return
+    }
+    if (type === "unsupported") {
+      setContent("")
+      setError("")
+      return
+    }
+    if (storedFile.file.size > 2 * 1024 * 1024) {
+      setError("A prévia do sandbox é limitada a arquivos de até 2 MB.")
+      setContent("")
+      return
+    }
+    storedFile.file
+      .text()
+      .then((text) => {
+        if (active) {
+          setError("")
+          setContent(text)
+        }
+      })
+      .catch((reason) => {
+        if (active)
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "Não foi possível ler o arquivo para o teste.",
+          )
+      })
+    return () => {
+      active = false
+    }
+  }, [storedFile, type])
+
+  const iframeSource = ["html", "javascript", "css"].includes(type)
+    ? sandboxDocument(type, content)
+    : ""
+
+  return (
+    <div
+      className="phone-scroll"
+      style={{ width: "100%", height: "100%", background: C.bg, overflowY: "auto" }}
+    >
+      <Header title="Sandbox de teste" onBack={() => navigate("my-projects")} />
+      <div style={{ padding: "20px" }}>
+        <div style={{ color: C.text, fontSize: 16, fontWeight: 700 }}>
+          {project.name}
+        </div>
+        <div style={{ color: C.text2, fontSize: 12, margin: "4px 0 16px" }}>
+          {storedFile?.fileName || project.fileName}
+        </div>
+        <label
+          htmlFor="sandbox-preview-type"
+          style={{ display: "block", color: C.text2, fontSize: 12, marginBottom: 6 }}
+        >
+          Tipo detectado (ou selecione manualmente)
+        </label>
+        <select
+          id="sandbox-preview-type"
+          value={type}
+          onChange={(event) => setType(event.target.value as SandboxType)}
+          style={{
+            width: "100%",
+            padding: "12px 14px",
+            marginBottom: 16,
+            background: C.surface2,
+            border: `1px solid ${C.border}`,
+            borderRadius: 12,
+            color: C.text,
+            fontSize: 14,
+          }}
+        >
+          <option value="html">HTML — executar prévia isolada</option>
+          <option value="javascript">JavaScript — executar prévia isolada</option>
+          <option value="css">CSS — aplicar à prévia isolada</option>
+          <option value="source">Texto/código — somente leitura</option>
+          <option value="unsupported">Tipo não reconhecido</option>
+        </select>
+        <div style={{ color: C.warning, fontSize: 12, lineHeight: 1.5, marginBottom: 16 }}>
+          O sandbox não permite acesso à origem da plataforma nem conexões de rede.
+          Arquivos não web são exibidos como texto, sem execução.
+        </div>
+        {loading && <div style={{ color: C.text2 }}>Carregando arquivo...</div>}
+        {error && <div style={{ color: C.danger, marginBottom: 12 }}>{error}</div>}
+        {!loading && !error && type === "unsupported" && (
+          <div style={{ color: C.text2 }}>
+            Não foi possível identificar um formato de texto compatível. Você pode
+            escolher o tipo manualmente.
+          </div>
+        )}
+        {!loading && !error && type === "source" && (
+          <pre
+            style={{
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              background: C.surface,
+              border: `1px solid ${C.border}`,
+              borderRadius: 12,
+              color: C.text,
+              padding: 16,
+              maxHeight: "60vh",
+              overflow: "auto",
+              fontSize: 12,
+            }}
+          >
+            {content}
+          </pre>
+        )}
+        {!loading && !error && iframeSource && (
+          <iframe
+            title={`Sandbox de ${project.name}`}
+            srcDoc={iframeSource}
+            sandbox="allow-scripts"
+            referrerPolicy="no-referrer"
+            style={{
+              width: "100%",
+              height: "60vh",
+              background: "white",
+              border: `1px solid ${C.border}`,
+              borderRadius: 12,
+            }}
+          />
+        )}
       </div>
     </div>
   )
@@ -3425,25 +3610,16 @@ function SecurityCheckScreen({
   blocked = false,
   project,
 }: {
-  navigate: (s: Screen) => void
+  navigate: (s: Screen, data?: unknown) => void
   blocked?: boolean
   project?: Project
 }) {
-  const [step, setStep] = useState(0)
   const steps = [
     { label: "Arquivo recebido", done: true },
-    { label: "Verificação de formato", done: step >= 1 },
-    { label: "Análise de integridade", done: step >= 2 },
-    { label: "Análise de segurança", done: step >= 3 },
-    { label: "Verificação concluída", done: step >= 4 },
+    { label: "Arquivo salvo no Supabase Storage", done: true },
+    { label: "Sandbox isolado disponível no navegador", done: true },
   ]
-  useEffect(() => {
-    if (step < 4) {
-      const t = setTimeout(() => setStep((s) => s + 1), 700)
-      return () => clearTimeout(t)
-    }
-  }, [step])
-  const done = step >= 4
+  const done = true
   return (
     <div
       style={{
@@ -3455,7 +3631,7 @@ function SecurityCheckScreen({
       }}
     >
       <Header
-        title="Verificação de segurança"
+        title="Arquivo enviado"
         onBack={() => navigate("publish")}
       />
       <div
@@ -3493,16 +3669,10 @@ function SecurityCheckScreen({
                 <CheckCircle size={32} color={C.success} />
               )
             ) : (
-              <Loader
-                size={32}
-                color={C.primary}
-                style={{ animation: "spin 1s linear infinite" }}
-              />
+              <CheckCircle size={32} color={C.success} />
             )}
           </div>
         </div>
-        <style>{`@keyframes spin { from{transform:rotate(0)} to{transform:rotate(360deg)} }`}</style>
-
         {/* Steps */}
         <div
           style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14 }}
@@ -3567,36 +3737,6 @@ function SecurityCheckScreen({
 
         {done && (
           <div style={{ marginTop: 28 }}>
-            {!blocked && project?.hasPreview && (
-              <div style={{ marginBottom: 20 }}>
-                <div
-                  style={{
-                    color: C.text,
-                    fontSize: 13,
-                    fontWeight: 700,
-                    marginBottom: 8,
-                  }}
-                >
-                  Prévia isolada
-                </div>
-                <div
-                  style={{
-                    height: 220,
-                    overflow: "hidden",
-                    borderRadius: 12,
-                    border: `1px solid ${C.border}`,
-                    background: "white",
-                  }}
-                >
-                  <iframe
-                    title={`Prévia de ${project.name}`}
-                    src={`/api/projects/${encodeURIComponent(String(project.id))}/preview`}
-                    sandbox=""
-                    style={{ width: "100%", height: "100%", border: 0 }}
-                  />
-                </div>
-              </div>
-            )}
             <div
               style={{
                 background: blocked ? C.danger + "11" : C.success + "11",
@@ -3615,12 +3755,12 @@ function SecurityCheckScreen({
                   marginBottom: 6,
                 }}
               >
-                {blocked ? "⚠ Arquivo bloqueado" : "✓ Arquivo aprovado"}
+                {blocked ? "Arquivo bloqueado" : "Arquivo armazenado"}
               </div>
               <div style={{ fontSize: 12, color: C.text2, lineHeight: 1.6 }}>
                 {blocked
-                  ? "Foi identificado um problema de segurança. O projeto não poderá ser publicado até que o problema seja corrigido."
-                  : "Seu projeto foi analisado e está apto para publicação."}
+                  ? "O upload foi bloqueado."
+                  : "Não foi executada uma análise antivírus. Teste o arquivo somente no sandbox isolado."}
               </div>
             </div>
             {blocked ? (
@@ -3631,11 +3771,21 @@ function SecurityCheckScreen({
                 variant="danger"
               />
             ) : (
-              <Btn
-                label="Publicar projeto"
-                onClick={() => navigate("my-projects")}
-                full
-              />
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {project && (
+                  <Btn
+                    label="Testar no sandbox"
+                    onClick={() => navigate("sandbox", project)}
+                    full
+                  />
+                )}
+                <Btn
+                  label="Meus projetos"
+                  onClick={() => navigate("my-projects")}
+                  full
+                  variant="secondary"
+                />
+              </div>
             )}
           </div>
         )}
@@ -3650,8 +3800,8 @@ function MyProjectsScreen({
 }: {
   navigate: (s: Screen, data?: unknown) => void
 }) {
-  const [tab, setTab] = useState("Publicados")
-  const tabs = ["Publicados", "Em análise", "Bloqueados", "Rascunhos"]
+  const [tab, setTab] = useState("Todos")
+  const tabs = ["Todos", "Enviados"]
   const [projects, setProjects] = useState<Project[]>([])
   const [editing, setEditing] = useState<Project | null>(null)
   const [editForm, setEditForm] = useState({
@@ -3667,9 +3817,7 @@ function MyProjectsScreen({
     getMyProjects()
       .then((response) =>
         setProjects(
-          response.projects.map((project) =>
-            normalizeProject(project as unknown as Record<string, unknown>),
-          ),
+          response.projects.map(normalizeProject),
         ),
       )
       .catch((reason) =>
@@ -3699,9 +3847,7 @@ function MyProjectsScreen({
       setProjects((current) =>
         current.map((project) =>
           project.id === editing.id
-            ? normalizeProject(
-                response.project as unknown as Record<string, unknown>,
-              )
+            ? normalizeProject(response.project)
             : project,
         ),
       )
@@ -3801,44 +3947,6 @@ function MyProjectsScreen({
           >
             {t}
           </button>
-        ))}
-      </div>
-
-      {/* Stats */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
-          gap: 10,
-          padding: "16px 20px",
-        }}
-      >
-        {[
-          {
-            label: "Downloads",
-            value: "21.1k",
-            icon: Download,
-            color: C.primary,
-          },
-          { label: "Avaliação", value: "4.8★", icon: Star, color: C.warning },
-          { label: "Doações", value: "R$142", icon: Heart, color: C.danger },
-        ].map((s) => (
-          <div
-            key={s.label}
-            style={{
-              background: C.surface,
-              border: `1px solid ${C.border}`,
-              borderRadius: 12,
-              padding: "12px 10px",
-              textAlign: "center",
-            }}
-          >
-            <s.icon size={16} color={s.color} style={{ marginBottom: 6 }} />
-            <div style={{ fontSize: 14, fontWeight: 700, color: s.color }}>
-              {s.value}
-            </div>
-            <div style={{ fontSize: 10, color: C.text3 }}>{s.label}</div>
-          </div>
         ))}
       </div>
 
@@ -3968,56 +4076,7 @@ function MyProjectsScreen({
                   v{p.version}
                 </div>
               </div>
-              <Badge
-                label={
-                  tab === "Publicados"
-                    ? "✓ Publicado"
-                    : tab === "Em análise"
-                      ? "⏳ Análise"
-                      : "⚠ Bloqueado"
-                }
-                color={
-                  tab === "Publicados"
-                    ? C.success
-                    : tab === "Em análise"
-                      ? C.warning
-                      : C.danger
-                }
-              />
-            </div>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr 1fr",
-                gap: 8,
-              }}
-            >
-              {[
-                {
-                  label: "Downloads",
-                  value: p.downloads.toLocaleString("pt-BR"),
-                },
-                { label: "Avaliação", value: `${p.rating}★` },
-                {
-                  label: "Doações",
-                  value: "R$" + Math.floor(p.downloads / 100),
-                },
-              ].map((s) => (
-                <div
-                  key={s.label}
-                  style={{
-                    background: C.surface2,
-                    borderRadius: 8,
-                    padding: "8px 6px",
-                    textAlign: "center",
-                  }}
-                >
-                  <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>
-                    {s.value}
-                  </div>
-                  <div style={{ fontSize: 10, color: C.text3 }}>{s.label}</div>
-                </div>
-              ))}
+              <Badge label="Enviado" color={C.primary} />
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <Btn
@@ -4027,11 +4086,19 @@ function MyProjectsScreen({
                 small
               />
               {p.fileName && (
-                <Btn
-                  label="Baixar"
-                  onClick={() => downloadProject(String(p.id))}
-                  small
-                />
+                <>
+                  <Btn
+                    label="Testar"
+                    onClick={() => navigate("sandbox", p)}
+                    variant="secondary"
+                    small
+                  />
+                  <Btn
+                    label="Baixar"
+                    onClick={() => startProjectDownload(String(p.id))}
+                    small
+                  />
+                </>
               )}
               <Btn
                 label="Excluir"
@@ -4270,9 +4337,7 @@ function ProfileEditScreen({ navigate }: { navigate: (s: Screen) => void }) {
       if (response.user.email !== profile.email) {
         sessionStorage.setItem("devio_pending_email", response.user.email)
         sessionStorage.setItem("devio_confirmation_email_sent", String(response.emailSent))
-        if (response.confirmationToken) {
-          sessionStorage.setItem("devio_confirmation_token", response.confirmationToken)
-        }
+        sessionStorage.setItem("devio_pending_email_change", "true")
         navigate("email-confirmation")
         return
       }
@@ -4769,16 +4834,47 @@ function CoverOverlay({ onClose }: { onClose: () => void }) {
 export default function App() {
   const [screen, setScreen] = useState<Screen>(() => {
     const params = new URLSearchParams(window.location.hash.slice(1))
-    if (params.has("confirmEmail")) return "email-confirmation"
-    if (params.has("resetPassword")) return "password-reset"
+    if (
+      params.has("confirmEmail") ||
+      params.get("type") === "signup" ||
+      params.get("type") === "email_change"
+    )
+      return "email-confirmation"
+    if (params.has("resetPassword") || params.get("type") === "recovery")
+      return "password-reset"
     return "splash"
   })
   const [history, setHistory] = useState<Screen[]>([])
-  const [projectData, setProjectData] = useState<Project>(PROJECTS[0])
+  const [projectData, setProjectData] = useState<Project | null>(null)
+  const [authLoaded, setAuthLoaded] = useState(false)
+  const [authError, setAuthError] = useState("")
+
+  useEffect(() => {
+    let active = true
+    hasActiveSession()
+      .then((hasSession) => {
+        if (!active) return
+        if (hasSession && screen === "splash") setScreen("home")
+        setAuthLoaded(true)
+      })
+      .catch((reason) => {
+        if (!active) return
+        setAuthError(
+          reason instanceof Error
+            ? reason.message
+            : "Não foi possível restaurar a sessão.",
+        )
+        setAuthLoaded(true)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   const navigate = (s: Screen, data?: unknown) => {
     setHistory((h) => [...h, screen])
-    if (data) setProjectData(data as Project)
+    if (data && typeof data === "object")
+      setProjectData(data as Project)
     setScreen(s)
   }
 
@@ -4801,7 +4897,13 @@ export default function App() {
   const renderScreen = () => {
     switch (screen) {
       case "splash":
-        return <SplashScreen navigate={navigate} />
+        return (
+          <SplashScreen
+            navigate={navigate}
+            authLoaded={authLoaded}
+            error={authError}
+          />
+        )
       case "login":
         return <LoginScreen navigate={navigate} />
       case "register":
@@ -4819,28 +4921,54 @@ export default function App() {
       case "search":
         return <SearchScreen navigate={navigate} />
       case "project-detail":
-        return <ProjectDetailScreen project={projectData} navigate={navigate} />
+        return projectData ? (
+          <ProjectDetailScreen project={projectData} navigate={navigate} />
+        ) : (
+          <HomeScreen navigate={navigate} />
+        )
       case "acquire":
-        return <AcquireScreen project={projectData} navigate={navigate} />
+        return projectData ? (
+          <AcquireScreen project={projectData} navigate={navigate} />
+        ) : (
+          <HomeScreen navigate={navigate} />
+        )
       case "acquire-success":
-        return (
+        return projectData ? (
           <AcquireSuccessScreen project={projectData} navigate={navigate} />
+        ) : (
+          <HomeScreen navigate={navigate} />
         )
       case "donate":
-        return <DonateScreen project={projectData} navigate={navigate} />
+        return projectData ? (
+          <DonateScreen project={projectData} navigate={navigate} />
+        ) : (
+          <HomeScreen navigate={navigate} />
+        )
       case "library":
         return <LibraryScreen navigate={navigate} />
       case "publish":
         return <PublishScreen navigate={navigate} />
       case "security-check":
-        return <SecurityCheckScreen navigate={navigate} project={projectData} />
+        return projectData ? (
+          <SecurityCheckScreen navigate={navigate} project={projectData} />
+        ) : (
+          <HomeScreen navigate={navigate} />
+        )
       case "security-blocked":
-        return (
+        return projectData ? (
           <SecurityCheckScreen
             navigate={navigate}
             blocked
             project={projectData}
           />
+        ) : (
+          <HomeScreen navigate={navigate} />
+        )
+      case "sandbox":
+        return projectData ? (
+          <ProjectSandboxScreen project={projectData} navigate={navigate} />
+        ) : (
+          <HomeScreen navigate={navigate} />
         )
       case "my-projects":
         return <MyProjectsScreen navigate={navigate} />

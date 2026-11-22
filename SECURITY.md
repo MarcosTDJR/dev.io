@@ -2,21 +2,19 @@
 
 ## Controles implementados
 
-- Cadastro armazena somente hashes de senha com `scrypt`; o login compara os hashes em tempo constante, aceita senhas de 8 a 128 caracteres e exige confirmação do e-mail.
-- Confirmação de e-mail e recuperação de senha usam tokens aleatórios de uso único, armazenados como hashes e expirados em 30 minutos. Configure SMTP para entregar os links.
-- A recuperação de senha invalida sessões existentes. A troca autenticada exige a senha atual; após 365 dias, o login pede a alteração da senha.
-- O perfil permite editar os dados da conta; mudar e-mail invalida a confirmação anterior e requer nova verificação. Fotos aceitam apenas JPEG/PNG/WebP até 2 MB, são validadas por assinatura e ficam privadas, servidas somente à sessão autenticada.
-- Sessões usam cookies `HttpOnly`, `SameSite=Lax` e `Secure` em produção.
-- O servidor emite logs JSON de método, caminho, status e duração da requisição, sem registrar corpo, senha, cookie ou query string. Erros de envio de e-mail são registrados sem incluir conteúdo da mensagem.
+- Cadastro, login, confirmação de e-mail e recuperação de senha usam Supabase Auth; senhas e sessões não são armazenadas pela aplicação.
+- Perfis, projetos e biblioteca usam políticas RLS; arquivos e avatares ficam em buckets privados, com políticas por usuário.
+- Uploads aceitam qualquer tipo até 100 MB. O sandbox limita prévias a 2 MB, remove scripts e atributos de evento de HTML, executa JavaScript em Web Worker dentro de iframe sem mesma origem e sem acesso de rede declarado na CSP, e exibe outros arquivos de texto sem executá-los.
+- Não há análise antivírus. Arquivos enviados não devem ser considerados verificados nem seguros para execução fora do sandbox.
+- A aplicação usa somente a chave publishable no frontend. Chaves `service_role`/secret nunca podem ser incluídas no cliente ou no repositório.
+- A API Express antiga ainda tem fluxos locais baseados em SQLite e não é usada pela aplicação React atual. Não a exponha como backend ativo sem revisar/migrar seus fluxos.
 - O workflow `security.yml` executa CodeQL, auditoria de dependências e build. O workflow `wapiti.yml` roda DAST agendado/manual somente contra o ambiente autorizado definido pelo segredo `DAST_TARGET_URL`.
 
 ## Hospedagem e configuração
 
-Prefira uma VPS mantida e atualizada, com firewall permitindo apenas as portas necessárias, TLS por proxy reverso e banco de dados em rede privada. O `docker-compose.yml` demonstra PostgreSQL com usuário dedicado, porta publicada alta (`15432`) e rotação de logs; não exponha a porta do banco à Internet.
+Configure `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY`, aplique `supabase/migrations/20261122000000_initial.sql` ao projeto e configure as URLs de redirecionamento e provedores de Auth no painel Supabase. A chave publishable é pública por definição; a segurança depende das políticas RLS e de Storage da migração. Não use credenciais de banco nem chaves `service_role` no frontend.
 
-Copie `.env.example` para `.env` em desenvolvimento e gere segredos exclusivos. Em produção, use o secret manager do provedor, não valores do exemplo. Configure `PUBLIC_APP_URL` com a origem HTTPS pública e SMTP por `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` e `SMTP_FROM`. Sem SMTP, os tokens de teste são retornados somente fora de produção. Nunca versione `.env` nem envie segredos para logs.
-
-O backend atual persiste os dados em SQLite; o PostgreSQL do Compose é uma configuração de referência e ainda não é usado pela API. Antes de operar multiusuário em uma VPS, migre o backend para PostgreSQL gerenciado ou privado e configure backups criptografados com restauração testada. A integração de Datadog/New Relic também depende da configuração de implantação: encaminhe stdout/stderr e logs do PostgreSQL/proxy, com alertas para erros, latência e indisponibilidade, retenção definida e acesso de menor privilégio. Não envie senhas, tokens, cookies ou dados pessoais ao sistema de observabilidade.
+Nunca versione `.env` nem envie segredos para logs. Chaves privilegiadas que tenham sido compartilhadas em canais não confiáveis devem ser rotacionadas no painel Supabase. O backend antigo persiste em SQLite e o PostgreSQL do Compose é apenas uma referência; esses recursos não participam da persistência atual do frontend. Configure backups criptografados e restauração testada no projeto Supabase. Não envie senhas, tokens, cookies ou dados pessoais ao sistema de observabilidade.
 
 ## Relato responsável de vulnerabilidades
 
