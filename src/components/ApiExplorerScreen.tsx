@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from "react"
-import { CheckCircle, CircleAlert, Play, RefreshCw, Trash2 } from "lucide-react"
+import {
+  CheckCircle,
+  CircleAlert,
+  Play,
+  RefreshCw,
+  Trash2,
+  X,
+} from "lucide-react"
 import {
   deleteProject,
   executeApiRequest,
@@ -17,6 +24,12 @@ type Props = {
   onBack: () => void
 }
 
+type ResponseModal = {
+  title: string
+  content: string
+  isError: boolean
+}
+
 function displayAvailability(availability: string) {
   if (availability === "vercel") return "Vercel Function"
   if (availability === "supabase") return "Supabase"
@@ -29,15 +42,14 @@ export default function ApiExplorerScreen({ onBack }: Props) {
   const [requestMethod, setRequestMethod] = useState<ApiMethod>("GET")
   const [requestPath, setRequestPath] = useState("/api/health")
   const [requestBody, setRequestBody] = useState("")
-  const [requestResult, setRequestResult] = useState("")
   const [requestError, setRequestError] = useState("")
   const [runningRouteId, setRunningRouteId] = useState("")
   const [projects, setProjects] = useState<ApiProject[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState("")
-  const [crudResult, setCrudResult] = useState("")
   const [crudError, setCrudError] = useState("")
   const [loadingProjects, setLoadingProjects] = useState(true)
   const [crudBusy, setCrudBusy] = useState(false)
+  const [responseModal, setResponseModal] = useState<ResponseModal | null>(null)
 
   const filteredRoutes = useMemo(() => {
     const normalized = query.trim().toLowerCase()
@@ -51,6 +63,15 @@ export default function ApiExplorerScreen({ onBack }: Props) {
   const selectedRoute = apiRouteCatalog.find(
     (route) => route.id === selectedRouteId,
   )
+
+  useEffect(() => {
+    if (!responseModal) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setResponseModal(null)
+    }
+    window.addEventListener("keydown", closeOnEscape)
+    return () => window.removeEventListener("keydown", closeOnEscape)
+  }, [responseModal])
 
   const refreshProjects = async (showReadResult = true) => {
     setCrudError("")
@@ -66,8 +87,9 @@ export default function ApiExplorerScreen({ onBack }: Props) {
           : String(tests[0]?.id || ""),
       )
       if (showReadResult)
-        setCrudResult(
-          JSON.stringify(
+        setResponseModal({
+          title: "Resposta CRUD · READ",
+          content: JSON.stringify(
             {
               operation: "READ",
               count: tests.length,
@@ -76,20 +98,27 @@ export default function ApiExplorerScreen({ onBack }: Props) {
             null,
             2,
           ),
-        )
+          isError: false,
+        })
     } catch (reason) {
-      setCrudError(
+      const message =
         reason instanceof Error
           ? reason.message
-          : "Entre na sua conta para testar o CRUD de projetos.",
-      )
+          : "Entre na sua conta para testar o CRUD de projetos."
+      setCrudError(message)
+      if (showReadResult)
+        setResponseModal({
+          title: "Erro CRUD · READ",
+          content: message,
+          isError: true,
+        })
     } finally {
       setLoadingProjects(false)
     }
   }
 
   useEffect(() => {
-    void refreshProjects()
+    void refreshProjects(false)
   }, [])
 
   const selectRoute = (routeId: string) => {
@@ -100,7 +129,6 @@ export default function ApiExplorerScreen({ onBack }: Props) {
     setRequestPath(route.safeTestPath || route.path)
     setRequestBody(route.testBody || "")
     setRequestError("")
-    setRequestResult("")
   }
 
   const runRouteTest = async () => {
@@ -130,15 +158,16 @@ export default function ApiExplorerScreen({ onBack }: Props) {
 
     setRunningRouteId(selectedRoute.id)
     setRequestError("")
-    setRequestResult("")
+    setResponseModal(null)
     try {
       const result = await executeApiRequest(
         requestMethod,
         requestPath,
         requestBody.trim() || undefined,
       )
-      setRequestResult(
-        JSON.stringify(
+      setResponseModal({
+        title: `Resposta da API · ${requestMethod} ${requestPath}`,
+        content: JSON.stringify(
           {
             method: requestMethod,
             path: requestPath,
@@ -149,13 +178,19 @@ export default function ApiExplorerScreen({ onBack }: Props) {
           null,
           2,
         ),
-      )
+        isError: !result.ok,
+      })
     } catch (reason) {
-      setRequestError(
+      const message =
         reason instanceof Error
           ? reason.message
-          : "Não foi possível testar a rota.",
-      )
+          : "Não foi possível testar a rota."
+      setRequestError(message)
+      setResponseModal({
+        title: "Erro ao executar a rota",
+        content: message,
+        isError: true,
+      })
     } finally {
       setRunningRouteId("")
     }
@@ -164,7 +199,7 @@ export default function ApiExplorerScreen({ onBack }: Props) {
   const createTestProject = async () => {
     setCrudBusy(true)
     setCrudError("")
-    setCrudResult("")
+    setResponseModal(null)
     try {
       const stamp = new Date().toISOString()
       const { project } = await uploadProject(
@@ -184,13 +219,22 @@ export default function ApiExplorerScreen({ onBack }: Props) {
       )
       await refreshProjects(false)
       setSelectedProjectId(String(project.id))
-      setCrudResult(JSON.stringify({ operation: "CREATE", project }, null, 2))
+      setResponseModal({
+        title: "Resposta CRUD · CREATE",
+        content: JSON.stringify({ operation: "CREATE", project }, null, 2),
+        isError: false,
+      })
     } catch (reason) {
-      setCrudError(
+      const message =
         reason instanceof Error
           ? reason.message
-          : "Não foi possível criar o projeto de teste.",
-      )
+          : "Não foi possível criar o projeto de teste."
+      setCrudError(message)
+      setResponseModal({
+        title: "Erro CRUD · CREATE",
+        content: message,
+        isError: true,
+      })
     } finally {
       setCrudBusy(false)
     }
@@ -204,6 +248,7 @@ export default function ApiExplorerScreen({ onBack }: Props) {
     }
     setCrudBusy(true)
     setCrudError("")
+    setResponseModal(null)
     try {
       const { project: updated } = await updateProject(String(project.id), {
         name: `${testProjectPrefix} atualizado`,
@@ -213,15 +258,26 @@ export default function ApiExplorerScreen({ onBack }: Props) {
         price: "",
       })
       await refreshProjects(false)
-      setCrudResult(
-        JSON.stringify({ operation: "UPDATE", project: updated }, null, 2),
-      )
+      setResponseModal({
+        title: "Resposta CRUD · UPDATE",
+        content: JSON.stringify(
+          { operation: "UPDATE", project: updated },
+          null,
+          2,
+        ),
+        isError: false,
+      })
     } catch (reason) {
-      setCrudError(
+      const message =
         reason instanceof Error
           ? reason.message
-          : "Não foi possível atualizar o projeto.",
-      )
+          : "Não foi possível atualizar o projeto."
+      setCrudError(message)
+      setResponseModal({
+        title: "Erro CRUD · UPDATE",
+        content: message,
+        isError: true,
+      })
     } finally {
       setCrudBusy(false)
     }
@@ -241,22 +297,30 @@ export default function ApiExplorerScreen({ onBack }: Props) {
       return
     setCrudBusy(true)
     setCrudError("")
+    setResponseModal(null)
     try {
       await deleteProject(String(project.id))
       await refreshProjects(false)
-      setCrudResult(
-        JSON.stringify(
+      setResponseModal({
+        title: "Resposta CRUD · DELETE",
+        content: JSON.stringify(
           { operation: "DELETE", ok: true, deletedProjectId: project.id },
           null,
           2,
         ),
-      )
+        isError: false,
+      })
     } catch (reason) {
-      setCrudError(
+      const message =
         reason instanceof Error
           ? reason.message
-          : "Não foi possível excluir o projeto.",
-      )
+          : "Não foi possível excluir o projeto."
+      setCrudError(message)
+      setResponseModal({
+        title: "Erro CRUD · DELETE",
+        content: message,
+        isError: true,
+      })
     } finally {
       setCrudBusy(false)
     }
@@ -353,11 +417,6 @@ export default function ApiExplorerScreen({ onBack }: Props) {
             <div className="api-feedback is-error" role="alert">
               <CircleAlert size={16} /> {crudError}
             </div>
-          )}
-          {crudResult && (
-            <pre className="api-response" aria-live="polite">
-              {crudResult}
-            </pre>
           )}
           <div className="api-muted-note">
             CREATE/READ/UPDATE/DELETE executam as funções reais da aplicação.
@@ -468,6 +527,11 @@ export default function ApiExplorerScreen({ onBack }: Props) {
               </span>
             )}
           </div>
+          {requestError && (
+            <div className="api-feedback is-error" role="alert">
+              <CircleAlert size={16} /> {requestError}
+            </div>
+          )}
           <div className="api-route-list">
             {filteredRoutes.map((route) => (
               <article className="api-route-card" key={route.id}>
@@ -502,16 +566,6 @@ export default function ApiExplorerScreen({ onBack }: Props) {
               </div>
             )}
           </div>
-          {requestError && (
-            <div className="api-feedback is-error" role="alert">
-              <CircleAlert size={16} /> {requestError}
-            </div>
-          )}
-          {requestResult && (
-            <pre className="api-response" aria-live="polite">
-              {requestResult}
-            </pre>
-          )}
           <div className="api-muted-note">
             Chamadas POST/PUT/PATCH/DELETE pedem confirmação antes de executar.
             Rotas administrativas exigem sessão de administrador. Rotas “Local
@@ -519,6 +573,53 @@ export default function ApiExplorerScreen({ onBack }: Props) {
           </div>
         </section>
       </div>
+      {responseModal && (
+        <div
+          className="api-response-backdrop"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setResponseModal(null)
+          }}
+        >
+          <section
+            className="api-response-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="api-response-title"
+          >
+            <header className="api-response-dialog-header">
+              <div className={responseModal.isError ? "is-error" : "is-success"}>
+                {responseModal.isError ? (
+                  <CircleAlert size={18} />
+                ) : (
+                  <CheckCircle size={18} />
+                )}
+                <h2 id="api-response-title">{responseModal.title}</h2>
+              </div>
+              <button
+                type="button"
+                className="api-icon-button"
+                onClick={() => setResponseModal(null)}
+                aria-label="Fechar resposta"
+                autoFocus
+              >
+                <X size={17} />
+              </button>
+            </header>
+            <pre className="api-response" aria-live="polite">
+              {responseModal.content}
+            </pre>
+            <footer className="api-response-dialog-footer">
+              <button
+                type="button"
+                className="api-primary-button"
+                onClick={() => setResponseModal(null)}
+              >
+                Fechar
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
     </div>
   )
 }
