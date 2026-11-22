@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react"
+import { App as CapacitorApp } from "@capacitor/app"
+import { Capacitor } from "@capacitor/core"
 import {
   Home,
   Compass,
@@ -6797,7 +6799,9 @@ export default function App() {
   const [authLoaded, setAuthLoaded] = useState(false)
   const [authError, setAuthError] = useState("")
   const [, setThemeVersion] = useState(initialTheme)
+  const historyRef = useRef(history)
 
+  historyRef.current = history
   const changeTheme = (nextTheme: AppTheme) => {
     applyTheme(nextTheme)
     localStorage.setItem("devio-theme", nextTheme)
@@ -6874,6 +6878,40 @@ export default function App() {
       setScreen(prev)
     }
   }
+
+  const goBackRef = useRef(goBack)
+  goBackRef.current = goBack
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return
+
+    let active = true
+    let removeListener: (() => void) | undefined
+
+    CapacitorApp.addListener("backButton", ({ canGoBack }) => {
+      if (historyRef.current.length > 0) {
+        goBackRef.current()
+      } else if (canGoBack) {
+        window.history.back()
+      } else {
+        void CapacitorApp.exitApp().catch((error) => {
+          console.error("Não foi possível fechar o aplicativo.", error)
+        })
+      }
+    })
+      .then((listener) => {
+        if (active) removeListener = () => void listener.remove()
+        else void listener.remove()
+      })
+      .catch((error) => {
+        console.error("Não foi possível registrar o botão Voltar.", error)
+      })
+
+    return () => {
+      active = false
+      removeListener?.()
+    }
+  }, [])
 
   const mainTabs: Screen[] = [
     "home",
