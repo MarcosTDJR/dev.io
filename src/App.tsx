@@ -49,9 +49,13 @@ import {
   RefreshCw,
   TrendingUp,
   Users,
+  UserPlus,
+  UserCheck,
   Archive,
   ImagePlus,
 } from "lucide-react"
+import { inspectProjectArchive } from "./sandbox/archive"
+import type { ArchivePreview } from "./sandbox/archive"
 import {
   addToLibrary,
   changePassword,
@@ -65,6 +69,8 @@ import {
   getAdminUsers,
   getCurrentUser,
   getLibrary,
+  getPublicProfile,
+  getPublicProject,
   getMyProjects,
   getProjectFile,
   getProjects,
@@ -78,6 +84,7 @@ import {
   resendConfirmation,
   setAdminProjectBlocked,
   setAdminUserBlocked,
+  setProfileFollow,
   updateProfile,
   updateProject,
   uploadAvatar,
@@ -87,11 +94,39 @@ import type {
   AdminProject,
   AdminUser,
   ApiProject,
+  PublicProfile,
+  ProfileStats,
   ProfileUser,
 } from "./lib/api"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-type Screen = "splash" | "login" | "register" | "email-confirmation" | "password-reset" | "password-change" | "home" | "explore" | "search" | "project-detail" | "acquire" | "acquire-success" | "donate" | "library" | "publish" | "security-check" | "security-blocked" | "sandbox" | "my-projects" | "profile" | "profile-edit" | "settings" | "admin" | "report"
+type Screen =
+  | "splash"
+  | "login"
+  | "register"
+  | "email-confirmation"
+  | "password-reset"
+  | "password-change"
+  | "home"
+  | "explore"
+  | "search"
+  | "project-detail"
+  | "acquire"
+  | "acquire-success"
+  | "donate"
+  | "library"
+  | "publish"
+  | "security-check"
+  | "security-blocked"
+  | "sandbox"
+  | "my-projects"
+  | "profile"
+  | "public-profile"
+  | "shared-project"
+  | "profile-edit"
+  | "settings"
+  | "admin"
+  | "report"
 
 // ─── Shared colour tokens ─────────────────────────────────────────────────────
 const C = {
@@ -124,6 +159,7 @@ type Project = {
   fileName?: string
   fileType?: string
   sandboxType?: string
+  acceptDonations?: boolean
 }
 
 function normalizeProject(value: ApiProject): Project {
@@ -139,6 +175,7 @@ function normalizeProject(value: ApiProject): Project {
     fileName: typeof value.fileName === "string" ? value.fileName : undefined,
     fileType: typeof value.fileType === "string" ? value.fileType : undefined,
     sandboxType: typeof value.sandboxType === "string" ? value.sandboxType : undefined,
+    acceptDonations: Boolean(value.acceptDonations),
   }
 }
 
@@ -150,10 +187,55 @@ function startProjectDownload(projectId: string) {
   })
 }
 
-type SandboxType = "auto" | "html" | "javascript" | "css" | "source" | "unsupported"
+function publicShareUrl(key: "profile" | "project", value: string) {
+  const publicAppUrl =
+    import.meta.env.VITE_PUBLIC_APP_URL?.replace(/\/+$/, "") ||
+    window.location.origin
+  const url = new URL(publicAppUrl)
+  url.search = ""
+  url.hash = ""
+  url.searchParams.set(key, value)
+  return url.toString()
+}
+
+async function sharePublicLink(title: string, text: string, url: string) {
+  try {
+    if (navigator.share) {
+      await navigator.share({ title, text, url })
+      return
+    }
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url)
+      window.alert("Link copiado para compartilhar.")
+      return
+    }
+    window.prompt("Copie este link para compartilhar:", url)
+  } catch (reason) {
+    if (reason instanceof DOMException && reason.name === "AbortError") return
+    window.alert(
+      reason instanceof Error
+        ? reason.message
+        : "Não foi possível compartilhar este link.",
+    )
+  }
+}
+
+type SandboxType =
+  | "auto"
+  | "html"
+  | "javascript"
+  | "css"
+  | "python"
+  | "ruby"
+  | "archive"
+  | "source"
+  | "unsupported"
 
 function detectSandboxType(fileName: string, mimeType = ""): SandboxType {
   const extension = fileName.split(".").pop()?.toLowerCase() || ""
+  if (extension === "zip" || mimeType === "application/zip") return "archive"
+  if (extension === "py") return "python"
+  if (extension === "rb") return "ruby"
   if (["html", "htm"].includes(extension) || mimeType === "text/html") return "html"
   if (
     ["js", "mjs", "cjs", "jsx"].includes(extension) ||
@@ -161,7 +243,7 @@ function detectSandboxType(fileName: string, mimeType = ""): SandboxType {
   ) return "javascript"
   if (extension === "css" || mimeType === "text/css") return "css"
   if (
-    ["txt", "md", "json", "ts", "tsx", "py", "java", "c", "h", "cpp", "hpp", "rs", "go", "sh", "xml", "yaml", "yml", "sql", "php", "rb", "swift", "kt", "dart"].includes(extension) ||
+    ["txt", "md", "json", "ts", "tsx", "java", "c", "h", "cpp", "hpp", "rs", "go", "sh", "xml", "yaml", "yml", "sql", "php", "swift", "kt", "dart"].includes(extension) ||
     mimeType.startsWith("text/") ||
     ["application/json", "application/xml"].includes(mimeType)
   ) return "source"
@@ -174,6 +256,9 @@ function sandboxTypeLabel(type: SandboxType) {
     html: "HTML",
     javascript: "JavaScript",
     css: "CSS",
+    python: "Python 3 (Pyodide)",
+    ruby: "Ruby (somente leitura)",
+    archive: "Projeto compactado (ZIP)",
     source: "Texto/código (somente leitura)",
     unsupported: "Formato não executável no navegador",
   }[type]
@@ -220,12 +305,14 @@ function Btn({
   variant = "primary",
   full = false,
   small = false,
+  disabled = false,
 }: {
   label: string
   onClick?: () => void
   variant?: "primary" | "secondary" | "ghost" | "danger"
   full?: boolean
   small?: boolean
+  disabled?: boolean
 }) {
   const base = `inline-flex items-center justify-center font-semibold rounded-xl transition-all active:scale-95 cursor-pointer ${
     full ? "w-full" : ""
@@ -252,7 +339,8 @@ function Btn({
     fontSize: small ? "12px" : "14px",
     fontWeight: 600,
     borderRadius: "12px",
-    cursor: "pointer",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.6 : 1,
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
@@ -260,7 +348,12 @@ function Btn({
     fontFamily: "Inter, sans-serif",
   }
   return (
-    <button style={inlineStyle} onClick={onClick} className={base}>
+    <button
+      style={inlineStyle}
+      onClick={onClick}
+      disabled={disabled}
+      className={base}
+    >
       {label}
     </button>
   )
@@ -284,7 +377,7 @@ function Input({
   const [focused, setFocused] = useState(false)
   const [showPw, setShowPw] = useState(false)
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div className="form-field" style={{ marginBottom: 16 }}>
       {label && (
         <div
           style={{
@@ -473,80 +566,35 @@ function BottomNav({
     { id: "profile", label: "Perfil", icon: User },
   ]
   return (
-    <div
-      style={{
-        position: "static",
-        width: "100%",
-        height: "auto",
-        background: C.surface,
-        borderTop: "none",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "stretch",
-        justifyContent: "flex-start",
-        gap: 6,
-        padding: "16px 12px",
-      }}
-    >
+    <nav className="app-bottom-nav" aria-label="Navegação principal">
       {items.map(({ id, label, icon: Icon }) => {
         const isActive = active === id
         return (
           <button
             key={id}
             onClick={() => navigate(id as Screen)}
+            className={`app-bottom-nav__item${isActive ? " is-active" : ""}${
+              id === "publish" ? " is-publish" : ""
+            }`}
+            aria-label={label}
+            aria-current={isActive ? "page" : undefined}
+            title={label}
             style={{
-              display: "flex",
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "flex-start",
-              gap: 12,
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              padding: "12px 14px",
-              width: "100%",
-              borderRadius: 12,
-              transition: "all 0.15s",
+              color: isActive ? C.primary : C.text2,
             }}
           >
             {id === "publish" ? (
-              <div
-                style={{
-                  width: 44,
-                  height: 44,
-                  borderRadius: 14,
-                  background: `linear-gradient(135deg, ${C.primary}, ${C.accent})`,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  marginTop: 0,
-                  boxShadow: `0 4px 16px ${C.primary}66`,
-                }}
-              >
+              <span className="app-bottom-nav__publish-icon">
                 <Icon size={20} color="white" />
-              </div>
-            ) : (
-              <Icon
-                size={22}
-                color={isActive ? C.primary : C.text3}
-                strokeWidth={isActive ? 2 : 1.5}
-              />
-            )}
-            {id !== "publish" && (
-              <span
-                style={{
-                  fontSize: 13,
-                  color: isActive ? C.primary : C.text3,
-                  fontWeight: isActive ? 600 : 400,
-                }}
-              >
-                {label}
               </span>
+            ) : (
+              <Icon size={22} strokeWidth={isActive ? 2.2 : 1.8} />
             )}
+            <span className="app-bottom-nav__label">{label}</span>
           </button>
         )
       })}
-    </div>
+    </nav>
   )
 }
 
@@ -1920,12 +1968,17 @@ function ExploreScreen({
   navigate: (s: Screen, data?: unknown) => void
 }) {
   const [activeFilter, setActiveFilter] = useState("Todos")
+  const [activeCategory, setActiveCategory] = useState("")
   const { projects, loading, error } = usePublicProjects()
   const filters = ["Todos", "Grátis", "Pagos"]
   const filteredProjects = projects.filter((project) => {
-    if (activeFilter === "Grátis") return project.price === "Grátis"
-    if (activeFilter === "Pagos") return project.price !== "Grátis"
-    return true
+    const matchesPrice =
+      activeFilter === "Grátis"
+        ? project.price === "Grátis"
+        : activeFilter === "Pagos"
+          ? project.price !== "Grátis"
+          : true
+    return matchesPrice && (!activeCategory || project.category === activeCategory)
   })
   return (
     <div
@@ -2019,17 +2072,24 @@ function ExploreScreen({
         }}
       >
         {CATEGORIES.map(({ label, icon: Icon, color }) => (
-          <div
+          <button
             key={label}
+            type="button"
+            aria-pressed={activeCategory === label}
+            onClick={() =>
+              setActiveCategory((current) => (current === label ? "" : label))
+            }
             style={{
-              background: C.surface,
-              border: `1px solid ${C.border}`,
+              background: activeCategory === label ? color + "18" : C.surface,
+              border: `1px solid ${activeCategory === label ? color : C.border}`,
               borderRadius: 14,
               padding: "14px 16px",
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
               gap: 10,
+              textAlign: "left",
+              fontFamily: "Inter, sans-serif",
             }}
           >
             <div
@@ -2049,12 +2109,18 @@ function ExploreScreen({
             <span style={{ fontSize: 13, color: C.text, fontWeight: 500 }}>
               {label}
             </span>
-          </div>
+          </button>
         ))}
       </div>
 
       {/* Projects */}
-      <SectionTitle title="Projetos publicados" />
+      <SectionTitle
+        title={
+          activeCategory
+            ? `Projetos em ${activeCategory}`
+            : "Projetos publicados"
+        }
+      />
       <div
         style={{
           padding: "8px 20px 24px",
@@ -2317,6 +2383,14 @@ function ProjectDetailScreen({
         right={
           <div style={{ display: "flex", gap: 8 }}>
             <button
+              aria-label="Compartilhar projeto"
+              onClick={() =>
+                void sharePublicLink(
+                  project.name,
+                  "Confira este projeto no dev.io.",
+                  publicShareUrl("project", project.id),
+                )
+              }
               style={{ background: "none", border: "none", cursor: "pointer" }}
             >
               <Share2 size={20} color={C.text2} />
@@ -2359,7 +2433,13 @@ function ProjectDetailScreen({
           {project.name}
         </div>
         <div style={{ fontSize: 13, color: C.text2, marginBottom: 12 }}>
-          por @{project.dev}
+          por{" "}
+          <button
+            className="text-link"
+            onClick={() => navigate("public-profile", project.dev)}
+          >
+            @{project.dev}
+          </button>
         </div>
 
         <div
@@ -2432,52 +2512,67 @@ function ProjectDetailScreen({
               Arquivo armazenado pelo dev.io
             </div>
             <div style={{ fontSize: 11, color: C.text2, lineHeight: 1.5 }}>
-              Arquivos enviados não são executados no servidor. Testes no navegador
-              usam um sandbox isolado e podem ser iniciados pelo proprietário.
+              Arquivos enviados não são executados no servidor. Qualquer visitante
+              pode testar formatos compatíveis em um sandbox isolado no navegador.
             </div>
           </div>
         </div>
 
         {/* Action buttons */}
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {project.fileName && (
+            <Btn
+              label="Testar projeto no sandbox"
+              onClick={() => navigate("sandbox", project)}
+              full
+              variant="secondary"
+            />
+          )}
           <Btn
             label={
-              project.fileName
+              project.price === "Grátis"
                 ? "Baixar projeto"
-                : project.price === "Grátis"
-                  ? "Baixar projeto"
-                  : `Adquirir — ${project.price}`
+                : `Adquirir — ${project.price}`
             }
             onClick={() =>
-              project.fileName
+              project.fileName && project.price === "Grátis"
                 ? startProjectDownload(String(project.id))
                 : navigate("acquire", project)
             }
             full
           />
           <div style={{ display: "flex", gap: 10 }}>
+            {project.acceptDonations && (
+              <button
+                onClick={() => navigate("donate", project)}
+                style={{
+                  flex: 1,
+                  padding: "12px",
+                  background: C.surface2,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 12,
+                  color: C.text,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  fontFamily: "Inter, sans-serif",
+                }}
+              >
+                <Heart size={15} color={C.danger} /> Apoiar
+              </button>
+            )}
             <button
-              onClick={() => navigate("donate", project)}
-              style={{
-                flex: 1,
-                padding: "12px",
-                background: C.surface2,
-                border: `1px solid ${C.border}`,
-                borderRadius: 12,
-                color: C.text,
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-                fontFamily: "Inter, sans-serif",
-              }}
-            >
-              <Heart size={15} color={C.danger} /> Apoiar
-            </button>
-            <button
+              onClick={() =>
+                void sharePublicLink(
+                  project.name,
+                  "Confira este projeto no dev.io.",
+                  publicShareUrl("project", project.id),
+                )
+              }
               style={{
                 flex: 1,
                 padding: "12px",
@@ -2513,9 +2608,16 @@ function AcquireScreen({
   navigate: (s: Screen, data?: unknown) => void
 }) {
   const isFree = project.price === "Grátis"
+  const [paymentMethod, setPaymentMethod] = useState("PIX")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const acquire = async () => {
+    if (!isFree) {
+      setError(
+        "O checkout ainda não está integrado a um provedor. Nenhuma cobrança foi feita e o projeto não foi adicionado à biblioteca.",
+      )
+      return
+    }
     setLoading(true)
     setError("")
     try {
@@ -2678,19 +2780,27 @@ function AcquireScreen({
             >
               Forma de pagamento
             </div>
-            {["Cartão de crédito", "PIX", "Boleto"].map((m, i) => (
-              <div
-                key={m}
+            {["Cartão de crédito", "PIX", "Boleto"].map((method) => {
+              const selected = paymentMethod === method
+              return (
+              <button
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                onClick={() => setPaymentMethod(method)}
+                key={method}
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: 12,
-                  background: i === 0 ? C.primary + "11" : C.surface,
-                  border: `1.5px solid ${i === 0 ? C.primary : C.border}`,
+                  width: "100%",
+                  background: selected ? C.primary + "11" : C.surface,
+                  border: `1.5px solid ${selected ? C.primary : C.border}`,
                   borderRadius: 12,
                   padding: "12px 14px",
                   marginBottom: 8,
                   cursor: "pointer",
+                  textAlign: "left",
                 }}
               >
                 <div
@@ -2698,13 +2808,13 @@ function AcquireScreen({
                     width: 18,
                     height: 18,
                     borderRadius: "50%",
-                    border: `2px solid ${i === 0 ? C.primary : C.border}`,
+                    border: `2px solid ${selected ? C.primary : C.border}`,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                   }}
                 >
-                  {i === 0 && (
+                  {selected && (
                     <div
                       style={{
                         width: 8,
@@ -2715,19 +2825,37 @@ function AcquireScreen({
                     />
                   )}
                 </div>
-                <CreditCard size={15} color={i === 0 ? C.primary : C.text3} />
+                <CreditCard size={15} color={selected ? C.primary : C.text3} />
                 <span
-                  style={{ fontSize: 13, color: i === 0 ? C.text : C.text2 }}
+                  style={{ fontSize: 13, color: selected ? C.text : C.text2 }}
                 >
-                  {m}
+                  {method}
                 </span>
-              </div>
-            ))}
+              </button>
+              )
+            })}
+            <div
+              style={{
+                color: C.warning,
+                background: C.warning + "11",
+                border: `1px solid ${C.warning}33`,
+                borderRadius: 12,
+                padding: 12,
+                fontSize: 12,
+                lineHeight: 1.5,
+                marginTop: 12,
+              }}
+            >
+              Checkout ainda indisponível. Configure um provedor de pagamentos
+              para aceitar {paymentMethod.toLowerCase()}; não informe dados de
+              cartão nesta tela.
+            </div>
             <div style={{ marginTop: 24 }}>
               <Btn
-                label={loading ? "Processando..." : "Confirmar aquisição"}
+                label="Checkout indisponível"
                 onClick={acquire}
                 full
+                variant="secondary"
               />
             </div>
           </>
@@ -2830,7 +2958,23 @@ function DonateScreen({
 }) {
   const [selected, setSelected] = useState<number | null>(null)
   const [custom, setCustom] = useState("")
+  const [paymentMethod, setPaymentMethod] = useState("PIX")
+  const [error, setError] = useState("")
   const amounts = [5, 10, 20, 50]
+  const donate = () => {
+    if (!project.acceptDonations) {
+      setError("Este projeto não está aceitando doações.")
+      return
+    }
+    const amount = custom ? Number(custom.replace(",", ".")) : selected
+    if (!amount || !Number.isFinite(amount) || amount < 1 || amount > 1000) {
+      setError("Escolha ou informe um valor entre R$ 1 e R$ 1.000.")
+      return
+    }
+    setError(
+      `O pagamento por ${paymentMethod} ainda não está integrado. Nenhuma doação foi cobrada.`,
+    )
+  }
   return (
     <div
       className="phone-scroll"
@@ -2847,6 +2991,21 @@ function DonateScreen({
         onBack={() => navigate("project-detail", project)}
       />
       <div style={{ padding: "24px 20px" }}>
+        {!project.acceptDonations && (
+          <div
+            style={{
+              color: C.warning,
+              background: C.warning + "11",
+              border: `1px solid ${C.warning}33`,
+              borderRadius: 12,
+              padding: 12,
+              fontSize: 13,
+              marginBottom: 16,
+            }}
+          >
+            Este projeto não está aceitando doações no momento.
+          </div>
+        )}
         <div style={{ textAlign: "center", marginBottom: 28 }}>
           <div
             style={{
@@ -2939,6 +3098,9 @@ function DonateScreen({
           <span style={{ color: C.text2, fontSize: 14 }}>R$</span>
           <input
             type="number"
+            min="1"
+            max="1000"
+            step="0.01"
             placeholder="0,00"
             value={custom}
             onChange={(e) => {
@@ -2957,7 +3119,46 @@ function DonateScreen({
           />
         </div>
 
-        <Btn label="Enviar doação" onClick={() => navigate("home")} full />
+        <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 }}>
+          Forma de pagamento
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          {["PIX", "Cartão"].map((method) => {
+            const active = paymentMethod === method
+            return (
+              <button
+                key={method}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setPaymentMethod(method)}
+                style={{
+                  flex: 1,
+                  padding: "11px",
+                  border: `1px solid ${active ? C.primary : C.border}`,
+                  borderRadius: 10,
+                  background: active ? C.primary + "22" : C.surface,
+                  color: active ? C.primary : C.text2,
+                  cursor: "pointer",
+                  fontFamily: "Inter, sans-serif",
+                }}
+              >
+                {method}
+              </button>
+            )
+          })}
+        </div>
+
+        {error && (
+          <div role="alert" style={{ color: C.warning, fontSize: 12, marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
+        <Btn
+          label={project.acceptDonations ? "Continuar para pagamento" : "Doações indisponíveis"}
+          onClick={donate}
+          full
+          variant={project.acceptDonations ? "primary" : "secondary"}
+        />
       </div>
     </div>
   )
@@ -3169,6 +3370,7 @@ function PublishScreen({
           version: form.version,
           price: form.price,
           sandboxType,
+          acceptDonations: String(acceptDonations),
         },
         file,
       )
@@ -3376,6 +3578,9 @@ function PublishScreen({
             <option value="html">HTML</option>
             <option value="javascript">JavaScript</option>
             <option value="css">CSS</option>
+            <option value="python">Python 3</option>
+            <option value="ruby">Ruby (somente leitura)</option>
+            <option value="archive">Projeto compactado (ZIP)</option>
             <option value="source">Texto/código (somente leitura)</option>
           </select>
         </div>
@@ -3489,6 +3694,9 @@ function ProjectSandboxScreen({
     fileType: string
   } | null>(null)
   const [content, setContent] = useState("")
+  const [archivePreview, setArchivePreview] = useState<ArchivePreview | null>(null)
+  const [pythonOutput, setPythonOutput] = useState("")
+  const [pythonRunning, setPythonRunning] = useState(false)
   const [type, setType] = useState<SandboxType>(() => {
     const requestedType = project.sandboxType as SandboxType | undefined
     return requestedType && requestedType !== "auto"
@@ -3497,6 +3705,17 @@ function ProjectSandboxScreen({
   })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const pythonWorker = useRef<Worker | null>(null)
+  const pythonTimeout = useRef<number | null>(null)
+
+  const stopPython = () => {
+    pythonWorker.current?.terminate()
+    pythonWorker.current = null
+    if (pythonTimeout.current !== null) {
+      window.clearTimeout(pythonTimeout.current)
+      pythonTimeout.current = null
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -3504,8 +3723,9 @@ function ProjectSandboxScreen({
       .then((result) => {
         if (active) {
           setStoredFile(result)
-          if (project.sandboxType === "auto")
+          if (project.sandboxType === "auto") {
             setType(detectSandboxType(result.fileName, result.fileType))
+          }
         }
       })
       .catch((reason) => {
@@ -3522,55 +3742,153 @@ function ProjectSandboxScreen({
     return () => {
       active = false
     }
-  }, [project.id])
+  }, [project.id, project.sandboxType])
 
   useEffect(() => {
     let active = true
-    if (!storedFile || !storedFile.file) {
+    if (!storedFile?.file) {
       setContent("")
       return
     }
-    if (type === "unsupported") {
+    setError("")
+    setPythonOutput("")
+    if (storedFile.fileName.toLowerCase().endsWith(".zip")) {
+      inspectProjectArchive(storedFile.file)
+        .then((preview) => {
+          if (!active) {
+            preview.objectUrls?.forEach(URL.revokeObjectURL)
+            return
+          }
+          setArchivePreview(preview)
+          setContent(preview.content || "")
+          if (preview.entry === "web") setType("html")
+          else if (preview.entry === "python") setType("python")
+          else if (preview.entry === "ruby") setType("ruby")
+          else if (preview.entry === "source") setType("source")
+          else setType("unsupported")
+        })
+        .catch((reason) => {
+          if (active)
+            setError(
+              reason instanceof Error
+                ? reason.message
+                : "Não foi possível identificar o projeto no ZIP.",
+            )
+        })
+    } else if (storedFile.file.size > 2 * 1024 * 1024) {
+      setError("A prévia de arquivos individuais é limitada a 2 MB.")
       setContent("")
-      setError("")
-      return
+    } else {
+      storedFile.file
+        .text()
+        .then((text) => {
+          if (active) setContent(text)
+        })
+        .catch((reason) => {
+          if (active)
+            setError(
+              reason instanceof Error
+                ? reason.message
+                : "Não foi possível ler o arquivo para o teste.",
+            )
+        })
     }
-    if (storedFile.file.size > 2 * 1024 * 1024) {
-      setError("A prévia do sandbox é limitada a arquivos de até 2 MB.")
-      setContent("")
-      return
-    }
-    storedFile.file
-      .text()
-      .then((text) => {
-        if (active) {
-          setError("")
-          setContent(text)
-        }
-      })
-      .catch((reason) => {
-        if (active)
-          setError(
-            reason instanceof Error
-              ? reason.message
-              : "Não foi possível ler o arquivo para o teste.",
-          )
-      })
     return () => {
       active = false
     }
-  }, [storedFile, type])
+  }, [storedFile])
 
-  const iframeSource = ["html", "javascript", "css"].includes(type)
-    ? sandboxDocument(type, content)
-    : ""
+  useEffect(() => {
+    return () => {
+      stopPython()
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      archivePreview?.objectUrls?.forEach(URL.revokeObjectURL)
+    }
+  }, [archivePreview])
+
+  const runPython = () => {
+    stopPython()
+    if (!content.trim()) {
+      setPythonOutput("O arquivo Python está vazio.")
+      return
+    }
+    if (content.length > 256 * 1024) {
+      setPythonOutput("O código Python excede o limite de 256 KB.")
+      return
+    }
+
+    setError("")
+    setPythonOutput("Iniciando Python 3 (Pyodide)...\n")
+    setPythonRunning(true)
+    try {
+      const worker = new Worker(
+        new URL("./sandbox/python.worker.ts", import.meta.url),
+        { type: "module" },
+      )
+      pythonWorker.current = worker
+      worker.onmessage = (
+        event: MessageEvent<{
+          type: "output" | "error" | "complete"
+          output?: string
+          error?: string
+        }>,
+      ) => {
+        if (event.data.type === "output" && event.data.output) {
+          setPythonOutput((current) =>
+            `${current}${event.data.output}`.slice(-50_000),
+          )
+        } else if (event.data.type === "error") {
+          setPythonOutput((current) =>
+            `${current}${event.data.error || "Erro no Python."}\n`.slice(-50_000),
+          )
+          setPythonRunning(false)
+          stopPython()
+        } else if (event.data.type === "complete") {
+          setPythonOutput((current) => `${current}\nExecução concluída.\n`)
+          setPythonRunning(false)
+          stopPython()
+        }
+      }
+      worker.onerror = (event) => {
+        setPythonOutput((current) => `${current}${event.message}\n`)
+        setPythonRunning(false)
+        stopPython()
+      }
+      pythonTimeout.current = window.setTimeout(() => {
+        setPythonOutput((current) =>
+          `${current}\nTempo limite de execução atingido (25 s).\n`,
+        )
+        setPythonRunning(false)
+        stopPython()
+      }, 25_000)
+      worker.postMessage({ code: content })
+    } catch (reason) {
+      setPythonRunning(false)
+      setPythonOutput(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível iniciar o interpretador Python.",
+      )
+    }
+  }
+
+  const isZipProject = storedFile?.fileName.toLowerCase().endsWith(".zip")
+  const iframeSource = isZipProject
+    ? archivePreview?.html || ""
+    : ["html", "javascript", "css"].includes(type)
+      ? sandboxDocument(type, content)
+      : ""
 
   return (
     <div
       className="phone-scroll"
       style={{ width: "100%", height: "100%", background: C.bg, overflowY: "auto" }}
     >
-      <Header title="Sandbox de teste" onBack={() => navigate("my-projects")} />
+      <Header title="Sandbox de teste" onBack={() => navigate("project-detail", project)} />
       <div style={{ padding: "20px" }}>
         <div style={{ color: C.text, fontSize: 16, fontWeight: 700 }}>
           {project.name}
@@ -3599,25 +3917,71 @@ function ProjectSandboxScreen({
             fontSize: 14,
           }}
         >
-          <option value="html">HTML — executar prévia isolada</option>
-          <option value="javascript">JavaScript — executar prévia isolada</option>
-          <option value="css">CSS — aplicar à prévia isolada</option>
-          <option value="source">Texto/código — somente leitura</option>
+          <option value="html">HTML — prévia isolada</option>
+          <option value="javascript">JavaScript — execução isolada</option>
+          <option value="css">CSS — prévia</option>
+          <option value="python">Python 3 — executar no navegador</option>
+          <option value="ruby">Ruby — somente leitura</option>
+          <option value="archive">ZIP — detectar entrypoint do projeto</option>
+          <option value="source">Código — somente leitura</option>
           <option value="unsupported">Tipo não reconhecido</option>
         </select>
         <div style={{ color: C.warning, fontSize: 12, lineHeight: 1.5, marginBottom: 16 }}>
-          O sandbox não permite acesso à origem da plataforma nem conexões de rede.
-          Arquivos não web são exibidos como texto, sem execução.
+          O projeto é executado localmente, não no servidor. A rede é bloqueada
+          durante a prévia; dependências dos projetos não são instaladas.
         </div>
+        {archivePreview && (
+          <div style={{ color: C.text2, fontSize: 12, marginBottom: 12 }}>
+            {archivePreview.entryName && `Entry: ${archivePreview.entryName}. `}
+            {archivePreview.message}
+          </div>
+        )}
         {loading && <div style={{ color: C.text2 }}>Carregando arquivo...</div>}
         {error && <div style={{ color: C.danger, marginBottom: 12 }}>{error}</div>}
+        {!loading && !error && type === "python" && (
+          <>
+            <Btn
+              label={pythonRunning ? "Executando Python..." : "Executar Python"}
+              onClick={runPython}
+              disabled={pythonRunning}
+              full
+            />
+            {pythonOutput && (
+              <pre
+                aria-live="polite"
+                style={{
+                  whiteSpace: "pre-wrap",
+                  overflowWrap: "anywhere",
+                  background: "#050508",
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 12,
+                  color: C.text,
+                  padding: 16,
+                  minHeight: 72,
+                  maxHeight: "35vh",
+                  overflow: "auto",
+                  fontSize: 12,
+                  marginTop: 12,
+                }}
+              >
+                {pythonOutput}
+              </pre>
+            )}
+          </>
+        )}
+        {!loading && !error && type === "ruby" && (
+          <div style={{ color: C.warning, fontSize: 12, marginBottom: 12 }}>
+            O interpretador Ruby ainda não está incluído no app; este arquivo é
+            exibido apenas para leitura.
+          </div>
+        )}
         {!loading && !error && type === "unsupported" && (
           <div style={{ color: C.text2 }}>
             Não foi possível identificar um formato de texto compatível. Você pode
             escolher o tipo manualmente.
           </div>
         )}
-        {!loading && !error && type === "source" && (
+        {!loading && !error && ["source", "ruby"].includes(type) && content && (
           <pre
             style={{
               whiteSpace: "pre-wrap",
@@ -4166,13 +4530,14 @@ function MyProjectsScreen({
 }
 
 // ─── SCREEN: Profile ──────────────────────────────────────────────────────────
-function ProfileScreen({ navigate }: { navigate: (s: Screen) => void }) {
+function ProfileScreen({
+  navigate,
+}: {
+  navigate: (s: Screen, data?: unknown) => void
+}) {
   const [profile, setProfile] = useState<ProfileUser | null>(null)
   const [savedProjects, setSavedProjects] = useState<ApiProject[]>([])
-  const [stats, setStats] = useState<{
-    projectCount: number
-    savedProjectCount: number
-  } | null>(null)
+  const [stats, setStats] = useState<ProfileStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
 
@@ -4226,11 +4591,35 @@ function ProfileScreen({ navigate }: { navigate: (s: Screen) => void }) {
         paddingBottom: 80,
       }}
     >
-      <Header title="Meu perfil" right={profile ? <button
-        onClick={() => navigate("settings")}
-        aria-label="Configurações"
-        style={{ background: "none", border: "none", cursor: "pointer" }}
-      ><Settings size={22} color={C.text2} /></button> : undefined} />
+      <Header
+        title="Meu perfil"
+        right={
+          profile ? (
+            <div style={{ display: "flex", gap: 12 }}>
+              <button
+                onClick={() =>
+                  void sharePublicLink(
+                    `Perfil de ${profile.name}`,
+                    "Conheça os projetos deste publicador no dev.io.",
+                    publicShareUrl("profile", profile.username),
+                  )
+                }
+                aria-label="Compartilhar perfil"
+                style={{ background: "none", border: "none", cursor: "pointer" }}
+              >
+                <Share2 size={20} color={C.text2} />
+              </button>
+              <button
+                onClick={() => navigate("settings")}
+                aria-label="Configurações"
+                style={{ background: "none", border: "none", cursor: "pointer" }}
+              >
+                <Settings size={22} color={C.text2} />
+              </button>
+            </div>
+          ) : undefined
+        }
+      />
       {loading ? (
         <div style={{ padding: 32, textAlign: "center", color: C.text2 }}>Carregando perfil...</div>
       ) : !profile ? (
@@ -4271,7 +4660,7 @@ function ProfileScreen({ navigate }: { navigate: (s: Screen) => void }) {
               {profile.bio || "Adicione uma biografia para contar sobre você."}
             </div>
             {error && <div style={{ color: C.danger, fontSize: 12, marginTop: 12 }}>{error}</div>}
-            <div style={{ display: "flex", justifyContent: "center", gap: 24, marginTop: 20 }}>
+            <div className="profile-stats" style={{ marginTop: 20 }}>
               <div>
                 <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>{stats?.projectCount ?? 0}</div>
                 <div style={{ fontSize: 11, color: C.text3 }}>Projetos</div>
@@ -4280,9 +4669,23 @@ function ProfileScreen({ navigate }: { navigate: (s: Screen) => void }) {
                 <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>{stats?.savedProjectCount ?? 0}</div>
                 <div style={{ fontSize: 11, color: C.text3 }}>Na biblioteca</div>
               </div>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>{stats?.followerCount ?? 0}</div>
+                <div style={{ fontSize: 11, color: C.text3 }}>Seguidores</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>{stats?.followingCount ?? 0}</div>
+                <div style={{ fontSize: 11, color: C.text3 }}>Seguindo</div>
+              </div>
             </div>
-            <div style={{ display: "flex", justifyContent: "center", gap: 10, marginTop: 20 }}>
+            <div className="profile-actions">
               <Btn label="Editar perfil" onClick={() => navigate("profile-edit")} variant="secondary" small />
+              <Btn
+                label="Ver perfil público"
+                onClick={() => navigate("public-profile", profile.username)}
+                variant="secondary"
+                small
+              />
               <Btn label="Meus projetos" onClick={() => navigate("my-projects")} small />
             </div>
           </div>
@@ -4322,6 +4725,213 @@ function ProfileScreen({ navigate }: { navigate: (s: Screen) => void }) {
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+function PublicProfileScreen({
+  username,
+  navigate,
+}: {
+  username: string
+  navigate: (s: Screen, data?: unknown) => void
+}) {
+  const [profile, setProfile] = useState<PublicProfile | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [following, setFollowing] = useState(false)
+  const [followBusy, setFollowBusy] = useState(false)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    setProfile(null)
+    setFollowing(false)
+    setError("")
+    getPublicProfile(username)
+      .then((result) => {
+        if (!active) return
+        setProfile(result)
+        setFollowing(result.isFollowing)
+      })
+      .catch((reason) => {
+        if (active)
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "Não foi possível carregar este perfil.",
+          )
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [username])
+
+  const toggleFollow = async () => {
+    if (!profile) return
+    if (!profile.isAuthenticated) {
+      navigate("login")
+      return
+    }
+    const nextFollowing = !following
+    setFollowBusy(true)
+    setError("")
+    try {
+      await setProfileFollow(profile.id, nextFollowing)
+      setFollowing(nextFollowing)
+      setProfile((current) =>
+        current
+          ? {
+              ...current,
+              isFollowing: nextFollowing,
+              followerCount: Math.max(
+                0,
+                current.followerCount + (nextFollowing ? 1 : -1),
+              ),
+            }
+          : current,
+      )
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Não foi possível atualizar o seguimento.",
+      )
+    } finally {
+      setFollowBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className="phone-scroll"
+      style={{
+        width: "100%",
+        height: "100%",
+        background: C.bg,
+        overflowY: "auto",
+        paddingBottom: 32,
+      }}
+    >
+      <Header
+        title="Perfil do publicador"
+        onBack={() => navigate("explore")}
+        right={
+          profile ? (
+            <button
+              aria-label="Compartilhar perfil"
+              onClick={() =>
+                void sharePublicLink(
+                  `Perfil de ${profile.name}`,
+                  "Conheça os projetos deste publicador no dev.io.",
+                  publicShareUrl("profile", profile.username),
+                )
+              }
+              style={{ background: "none", border: "none", cursor: "pointer" }}
+            >
+              <Share2 size={20} color={C.text2} />
+            </button>
+          ) : undefined
+        }
+      />
+      {loading ? (
+        <div className="page-status">Carregando perfil...</div>
+      ) : error && !profile ? (
+        <div className="page-status" style={{ color: C.danger }}>
+          {error}
+        </div>
+      ) : profile ? (
+        <>
+          <section className="public-profile-hero">
+            <div className="public-profile-avatar" aria-hidden="true">
+              {profile.name.trim().charAt(0).toUpperCase() || "D"}
+            </div>
+            <div className="public-profile-name">{profile.name}</div>
+            <div className="public-profile-username">@{profile.username}</div>
+            <p className="public-profile-bio">
+              {profile.bio ||
+                "Este publicador ainda não adicionou uma biografia."}
+            </p>
+            {!profile.isOwner && (
+              <button
+                className={`follow-button${following ? " is-following" : ""}`}
+                onClick={() => void toggleFollow()}
+                disabled={followBusy}
+              >
+                {profile.isAuthenticated ? (
+                  following ? (
+                    <>
+                      <UserCheck size={17} /> Seguindo
+                    </>
+                  ) : (
+                    <>
+                      <UserPlus size={17} /> Seguir
+                    </>
+                  )
+                ) : (
+                  <>
+                    <UserPlus size={17} /> Entrar para seguir
+                  </>
+                )}
+              </button>
+            )}
+            {error && <div className="inline-error">{error}</div>}
+            <div className="profile-stats public-profile-stats">
+              <div>
+                <strong>{profile.projects.length}</strong>
+                <span>Projetos</span>
+              </div>
+              <div>
+                <strong>{profile.followerCount}</strong>
+                <span>Seguidores</span>
+              </div>
+              <div>
+                <strong>{profile.followingCount}</strong>
+                <span>Seguindo</span>
+              </div>
+            </div>
+          </section>
+
+          <section className="public-projects-section">
+            <div className="public-projects-heading">
+              <div>
+                <h2>Projetos de @{profile.username}</h2>
+                <p>Explore, compartilhe e apoie os projetos deste publicador.</p>
+              </div>
+            </div>
+            {profile.projects.length ? (
+              <div className="public-project-grid">
+                {profile.projects.map((row) => {
+                  const project = normalizeProject(row)
+                  return (
+                    <article className="public-project-card" key={project.id}>
+                      <ProjectCard
+                        project={project}
+                        onPress={() => navigate("project-detail", project)}
+                      />
+                      {project.acceptDonations && (
+                        <button
+                          className="project-donate-button"
+                          onClick={() => navigate("donate", project)}
+                        >
+                          <Heart size={15} /> Apoiar este projeto
+                        </button>
+                      )}
+                    </article>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="page-status">
+                Este publicador ainda não tem projetos públicos.
+              </div>
+            )}
+          </section>
+        </>
+      ) : null}
     </div>
   )
 }
@@ -5381,12 +5991,53 @@ export default function App() {
       params.get("type") === "recovery"
     )
       return "password-reset"
+    if (searchParams.has("profile")) return "public-profile"
+    if (searchParams.has("project")) return "shared-project"
     return "splash"
   })
   const [history, setHistory] = useState<Screen[]>([])
   const [projectData, setProjectData] = useState<Project | null>(null)
+  const [publicProfileUsername, setPublicProfileUsername] = useState(
+    () => new URLSearchParams(window.location.search).get("profile") || "",
+  )
+  const [sharedProjectLoading, setSharedProjectLoading] = useState(
+    () => new URLSearchParams(window.location.search).has("project"),
+  )
+  const [sharedProjectError, setSharedProjectError] = useState("")
   const [authLoaded, setAuthLoaded] = useState(false)
   const [authError, setAuthError] = useState("")
+
+  useEffect(() => {
+    const projectId = new URLSearchParams(window.location.search).get("project")
+    if (!projectId) {
+      if (new URLSearchParams(window.location.search).has("project")) {
+        setSharedProjectError("O link do projeto está incompleto.")
+        setSharedProjectLoading(false)
+      }
+      return
+    }
+    let active = true
+    getPublicProject(projectId)
+      .then((project) => {
+        if (!active) return
+        setProjectData(normalizeProject(project))
+        setScreen("project-detail")
+      })
+      .catch((reason) => {
+        if (active)
+          setSharedProjectError(
+            reason instanceof Error
+              ? reason.message
+              : "Não foi possível abrir o projeto compartilhado.",
+          )
+      })
+      .finally(() => {
+        if (active) setSharedProjectLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -5412,7 +6063,9 @@ export default function App() {
 
   const navigate = (s: Screen, data?: unknown) => {
     setHistory((h) => [...h, screen])
-    if (data && typeof data === "object")
+    if (s === "public-profile" && typeof data === "string")
+      setPublicProfileUsername(data.replace(/^@/, ""))
+    else if (data && typeof data === "object")
       setProjectData(data as Project)
     setScreen(s)
   }
@@ -5513,6 +6166,22 @@ export default function App() {
         return <MyProjectsScreen navigate={navigate} />
       case "profile":
         return <ProfileScreen navigate={navigate} />
+      case "public-profile":
+        return (
+          <PublicProfileScreen
+            username={publicProfileUsername}
+            navigate={navigate}
+          />
+        )
+      case "shared-project":
+        return (
+          <div className="page-status">
+            {sharedProjectError ||
+              (sharedProjectLoading
+                ? "Carregando projeto compartilhado..."
+                : "Não foi possível carregar o projeto.")}
+          </div>
+        )
       case "profile-edit":
         return <ProfileEditScreen navigate={navigate} />
       case "settings":

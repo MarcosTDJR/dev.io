@@ -18,6 +18,21 @@ export type ProfileUser = ApiUser & {
 export type ProfileStats = {
   projectCount: number
   savedProjectCount: number
+  followerCount: number
+  followingCount: number
+}
+
+export type PublicProfile = {
+  id: string
+  username: string
+  name: string
+  bio: string
+  followerCount: number
+  followingCount: number
+  isFollowing: boolean
+  isOwner: boolean
+  isAuthenticated: boolean
+  projects: ApiProject[]
 }
 
 export type AdminUser = {
@@ -54,6 +69,7 @@ export type ApiProject = {
   fileName?: string
   fileType?: string
   sandboxType?: string
+  acceptDonations: boolean
 }
 
 type ProjectRow = {
@@ -69,6 +85,7 @@ type ProjectRow = {
   file_size: number
   file_type: string | null
   sandbox_type: string | null
+  accept_donations?: boolean
   created_at: string
   profiles?: { username: string } | { username: string }[] | null
 }
@@ -85,6 +102,12 @@ function throwIfError(error: { message: string } | null) {
   if (error) throw new Error(error.message)
 }
 
+function apiBaseUrl() {
+  return (
+    import.meta.env.VITE_API_URL || import.meta.env.VITE_ADMIN_API_URL || ""
+  ).replace(/\/+$/, "")
+}
+
 function mapProject(row: ProjectRow): ApiProject {
   const profile = Array.isArray(row.profiles) ? row.profiles[0] : row.profiles
   return {
@@ -99,6 +122,7 @@ function mapProject(row: ProjectRow): ApiProject {
     fileName: row.file_name,
     fileType: row.file_type || undefined,
     sandboxType: row.sandbox_type || undefined,
+    acceptDonations: Boolean(row.accept_donations),
   }
 }
 
@@ -134,7 +158,8 @@ async function adminRequest<T>(
   const headers = new Headers(init.headers)
   headers.set("Authorization", `Bearer ${accessToken}`)
   if (init.body) headers.set("Content-Type", "application/json")
-  const response = await fetch(`/api/admin${path}`, {
+  const adminApiUrl = apiBaseUrl()
+  const response = await fetch(`${adminApiUrl || ""}/api/admin${path}`, {
     ...init,
     headers,
   })
@@ -285,7 +310,8 @@ export async function getCurrentUser() {
   throwIfError(error)
   if (!data.user) return { user: null, stats: null }
 
-  const [user, projectCount, savedProjectCount] = await Promise.all([
+  const [user, projectCount, savedProjectCount, followerCount, followingCount] =
+    await Promise.all([
     mapProfileUser(data.user),
     supabase
       .from("projects")
@@ -295,16 +321,130 @@ export async function getCurrentUser() {
       .from("library")
       .select("project_id", { count: "exact", head: true })
       .eq("user_id", data.user.id),
+    supabase
+      .from("profile_follows")
+      .select("follower_id", { count: "exact", head: true })
+      .eq("followed_id", data.user.id),
+    supabase
+      .from("profile_follows")
+      .select("followed_id", { count: "exact", head: true })
+      .eq("follower_id", data.user.id),
   ])
   throwIfError(projectCount.error)
   throwIfError(savedProjectCount.error)
+  throwIfError(followerCount.error)
+  throwIfError(followingCount.error)
   return {
     user,
     stats: {
       projectCount: projectCount.count || 0,
       savedProjectCount: savedProjectCount.count || 0,
+      followerCount: followerCount.count || 0,
+      followingCount: followingCount.count || 0,
     },
   }
+}
+
+export async function getPublicProfile(username: string): Promise<PublicProfile> {
+  const normalizedUsername = username.trim().replace(/^@/, "").toLowerCase()
+  if (!/^[a-z0-9_]{3,30}$/.test(normalizedUsername))
+    throw new Error("Nome de usuário inválido.")
+
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("id, username, display_name, bio")
+    .eq("username", normalizedUsername)
+    .maybeSingle()
+  throwIfError(profileError)
+  if (!profile) throw new Error("Este perfil não foi encontrado.")
+
+  const [
+    { data: projectRows, error: projectsError },
+    { count: followerCount, error: followerError },
+    { count: followingCount, error: followingError },
+    { data: sessionData, error: sessionError },
+  ] = await Promise.all([
+    supabase
+      .from("projects")
+      .select("*, profiles!projects_owner_id_fkey(username)")
+      .eq("owner_id", profile.id)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("profile_follows")
+      .select("follower_id", { count: "exact", head: true })
+      .eq("followed_id", profile.id),
+    supabase
+      .from("profile_follows")
+      .select("followed_id", { count: "exact", head: true })
+      .eq("follower_id", profile.id),
+    supabase.auth.getSession(),
+  ])
+  throwIfError(projectsError)
+  throwIfError(followerError)
+  throwIfError(followingError)
+  throwIfError(sessionError)
+
+  const userId = sessionData.session?.user.id
+  let isFollowing = false
+  if (userId && userId !== profile.id) {
+    const { data: follow, error: followError } = await supabase
+      .from("profile_follows")
+      .select("followed_id")
+      .eq("follower_id", userId)
+      .eq("followed_id", profile.id)
+      .maybeSingle()
+    throwIfError(followError)
+    isFollowing = Boolean(follow)
+  }
+
+  return {
+    id: profile.id,
+    username: profile.username,
+    name: profile.display_name,
+    bio: profile.bio,
+    followerCount: followerCount || 0,
+    followingCount: followingCount || 0,
+    isFollowing,
+    isOwner: userId === profile.id,
+    isAuthenticated: Boolean(userId),
+    projects: (projectRows || []).map((row) =>
+      mapProject(row as ProjectRow),
+    ),
+  }
+}
+
+export async function setProfileFollow(profileId: string, follow: boolean) {
+  const user = await getAuthenticatedUser()
+  if (user.id === profileId)
+    throw new Error("Você já está seguindo a si mesmo.")
+
+  if (follow) {
+    const { error } = await supabase.from("profile_follows").upsert(
+      { follower_id: user.id, followed_id: profileId },
+      {
+        onConflict: "follower_id,followed_id",
+        ignoreDuplicates: true,
+      },
+    )
+    throwIfError(error)
+  } else {
+    const { error } = await supabase
+      .from("profile_follows")
+      .delete()
+      .eq("follower_id", user.id)
+      .eq("followed_id", profileId)
+    throwIfError(error)
+  }
+}
+
+export async function getPublicProject(projectId: string) {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("*, profiles!projects_owner_id_fkey(username)")
+    .eq("id", projectId)
+    .single()
+  throwIfError(error)
+  return mapProject(data as ProjectRow)
 }
 
 export async function updateProfile(payload: {
@@ -415,30 +555,41 @@ export async function downloadProject(projectId: string) {
 }
 
 export async function getProjectFile(projectId: string) {
-  const { data, error } = await supabase
-    .from("projects")
-    .select("file_path, file_name, file_size, file_type, sandbox_type")
-    .eq("id", projectId)
-    .single()
-  throwIfError(error)
-  const project = data as Pick<
-    ProjectRow,
-    "file_path" | "file_name" | "file_size" | "file_type" | "sandbox_type"
-  >
-  if (project.file_size > 2 * 1024 * 1024)
-    throw new Error("A prévia do sandbox é limitada a arquivos de até 2 MB.")
-  const { data: file, error: downloadError } = await supabase.storage
-    .from("devio-project-files")
-    .download(project.file_path)
-  throwIfError(downloadError)
-  if (!file) throw new Error("O Supabase não retornou o arquivo.")
-  if (file.size > 2 * 1024 * 1024)
-    throw new Error("A prévia do sandbox é limitada a arquivos de até 2 MB.")
+  const apiUrl = apiBaseUrl()
+  const response = await fetch(
+    `${apiUrl || ""}/api/projects/${encodeURIComponent(projectId)}/sandbox`,
+  )
+  if (!response.headers.get("content-type")?.includes("application/json")) {
+    if (response.status === 404) {
+      throw new Error(
+        "A API ainda não reconhece a rota pública do sandbox. Reinicie o servidor API e tente novamente.",
+      )
+    }
+    throw new Error(
+      `A API do sandbox retornou uma resposta inválida (HTTP ${response.status}).`,
+    )
+  }
+  const result = (await response.json()) as {
+    fileName?: string
+    fileType?: string
+    sandboxType?: string
+    signedUrl?: string
+    error?: string
+  }
+  if (!response.ok || !result.signedUrl)
+    throw new Error(result.error || "Não foi possível carregar a prévia pública.")
+
+  const fileResponse = await fetch(result.signedUrl)
+  if (!fileResponse.ok)
+    throw new Error("Não foi possível baixar o arquivo da prévia.")
+  const file = await fileResponse.blob()
+  if (file.size > 25 * 1024 * 1024)
+    throw new Error("A prévia do sandbox aceita arquivos de até 25 MB.")
   return {
     file,
-    fileName: project.file_name,
-    fileType: project.file_type || "application/octet-stream",
-    sandboxType: project.sandbox_type || "auto",
+    fileName: result.fileName || "projeto",
+    fileType: result.fileType || "application/octet-stream",
+    sandboxType: result.sandboxType || "auto",
   }
 }
 
@@ -521,7 +672,7 @@ export async function changePassword(
 export async function getProjects() {
   const { data, error } = await supabase
     .from("projects")
-    .select("*, profiles(username)")
+    .select("*, profiles!projects_owner_id_fkey(username)")
     .order("created_at", { ascending: false })
   throwIfError(error)
   return { projects: (data || []).map((row) => mapProject(row as ProjectRow)) }
@@ -531,7 +682,7 @@ export async function getLibrary() {
   const user = await getAuthenticatedUser()
   const { data, error } = await supabase
     .from("library")
-    .select("projects(*, profiles(username))")
+    .select("projects(*, profiles!projects_owner_id_fkey(username))")
     .eq("user_id", user.id)
     .order("added_at", { ascending: false })
   throwIfError(error)
@@ -567,7 +718,7 @@ export async function getMyProjects() {
   const user = await getAuthenticatedUser()
   const { data, error } = await supabase
     .from("projects")
-    .select("*, profiles(username)")
+    .select("*, profiles!projects_owner_id_fkey(username)")
     .eq("owner_id", user.id)
     .order("created_at", { ascending: false })
   throwIfError(error)
@@ -608,11 +759,12 @@ export async function uploadProject(
     file_size: file.size,
     file_type: file.type || "application/octet-stream",
     sandbox_type: fields.sandboxType || "auto",
+    accept_donations: fields.acceptDonations === "true",
   }
   const { data, error } = await supabase
     .from("projects")
     .insert(projectPayload)
-    .select("*, profiles(username)")
+    .select("*, profiles!projects_owner_id_fkey(username)")
     .single()
   if (error) {
     const { error: cleanupError } = await supabase.storage
@@ -669,7 +821,7 @@ export async function updateProject(
       price: fields.price ? `R$ ${fields.price.replace(/^R\$\s*/, "")}` : "Grátis",
     })
     .eq("id", projectId)
-    .select("*, profiles(username)")
+    .select("*, profiles!projects_owner_id_fkey(username)")
     .single()
   throwIfError(error)
   return { project: mapProject(data as ProjectRow) }

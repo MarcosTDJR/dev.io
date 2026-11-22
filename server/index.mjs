@@ -15,7 +15,16 @@ const dataDirectory = process.env.DEVIO_DATA_DIR || path.join(root, "data")
 const storageDirectory =
   process.env.DEVIO_STORAGE_DIR || path.join(root, "storage", "projects")
 const avatarDirectory = path.join(storageDirectory, "avatars")
-const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
+const supabaseUrl = (
+  process.env.SUPABASE_URL ||
+  process.env.VITE_SUPABASE_URL ||
+  ""
+).trim()
+if (supabaseUrl && !/^https?:\/\//i.test(supabaseUrl)) {
+  throw new Error(
+    "Invalid SUPABASE_URL: use the Supabase Project URL, not an API key.",
+  )
+}
 const supabaseSecret =
   process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
 const adminSupabase =
@@ -366,11 +375,17 @@ const app = express()
 app.use(express.json({ limit: "1mb" }))
 if (process.env.NODE_ENV === "production")
   app.use(express.static(path.join(root, "dist")))
+const allowedWebOrigins = (
+  process.env.WEB_ORIGIN || "http://localhost:8443"
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean)
 app.use((req, res, next) => {
-  res.setHeader(
-    "Access-Control-Allow-Origin",
-    process.env.WEB_ORIGIN || "http://localhost:8443",
-  )
+  const origin = req.headers.origin
+  if (!origin || allowedWebOrigins.includes(origin))
+    res.setHeader("Access-Control-Allow-Origin", origin || allowedWebOrigins[0])
+  res.setHeader("Vary", "Origin")
   res.setHeader("Access-Control-Allow-Credentials", "true")
   res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type")
   res.setHeader(
@@ -473,7 +488,7 @@ app.get("/api/admin/projects", requireAdmin, async (req, res) => {
   const { data, error, count } = await adminSupabase
     .from("projects")
     .select(
-      "id, name, owner_id, category, version, created_at, file_path, file_name, is_blocked, profiles(username, display_name)",
+      "id, name, owner_id, category, version, created_at, file_path, file_name, is_blocked, profiles!projects_owner_id_fkey(username, display_name)",
       { count: "exact" },
     )
     .order("created_at", { ascending: false })
@@ -1192,6 +1207,47 @@ app.get("/api/projects/mine", requireUser, (req, res) => {
     )
     .all(req.user.id)
   res.json({ projects: rows.map(publicProject) })
+})
+
+app.get("/api/projects/:id/sandbox", async (req, res) => {
+  if (!adminSupabase)
+    return res.status(503).json({
+      error: "A prévia pública precisa ser configurada no servidor.",
+    })
+  if (!uuidPattern.test(req.params.id))
+    return res.status(400).json({ error: "Identificador de projeto inválido." })
+
+  const { data: project, error } = await adminSupabase
+    .from("projects")
+    .select("file_path, file_name, file_size, file_type, sandbox_type")
+    .eq("id", req.params.id)
+    .eq("is_blocked", false)
+    .maybeSingle()
+  if (error)
+    return res.status(502).json({ error: "Não foi possível carregar o projeto." })
+  if (!project)
+    return res.status(404).json({ error: "Projeto não encontrado." })
+  if (project.file_size > 25 * 1024 * 1024)
+    return res.status(413).json({
+      error: "A prévia do sandbox aceita arquivos de até 25 MB.",
+    })
+
+  const { data: signedFile, error: signedUrlError } =
+    await adminSupabase.storage
+      .from("devio-project-files")
+      .createSignedUrl(project.file_path, 120)
+  if (signedUrlError || !signedFile?.signedUrl)
+    return res.status(502).json({
+      error: "Não foi possível preparar a prévia pública.",
+    })
+
+  res.setHeader("Cache-Control", "no-store")
+  return res.json({
+    signedUrl: signedFile.signedUrl,
+    fileName: project.file_name,
+    fileType: project.file_type,
+    sandboxType: project.sandbox_type,
+  })
 })
 
 app.get("/api/projects/:id/download", (req, res) => {

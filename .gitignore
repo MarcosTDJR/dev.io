@@ -2,6 +2,10 @@ node_modules
 data/
 storage/
 /release/linux-unpacked/
+/android/.gradle/
+/android/local.properties
+/android/**/build/
+/public/pyodide/
 .env
 .env.*
 !.env.example

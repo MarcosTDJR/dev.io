@@ -24,13 +24,25 @@ create table if not exists public.projects (
   file_size bigint not null check (file_size > 0 and file_size <= 104857600),
   file_type text not null default 'application/octet-stream',
   sandbox_type text not null default 'auto'
-    check (sandbox_type in ('auto', 'html', 'javascript', 'css', 'source')),
+    check (sandbox_type in (
+      'auto', 'html', 'javascript', 'css', 'python', 'ruby', 'archive', 'source'
+    )),
   is_blocked boolean not null default false,
+  accept_donations boolean not null default false,
   created_at timestamptz not null default now()
 );
 
 alter table public.projects
   add column if not exists is_blocked boolean not null default false;
+alter table public.projects
+  add column if not exists accept_donations boolean not null default false;
+alter table public.projects
+  drop constraint if exists projects_sandbox_type_check;
+alter table public.projects
+  add constraint projects_sandbox_type_check
+  check (sandbox_type in (
+    'auto', 'html', 'javascript', 'css', 'python', 'ruby', 'archive', 'source'
+  ));
 
 create table if not exists public.library (
   user_id uuid not null references public.profiles (id) on delete cascade,
@@ -92,9 +104,9 @@ grant update (username, display_name, bio, avatar_path)
   on public.profiles to authenticated;
 grant insert (
   id, owner_id, name, description, category, version, price, file_name,
-  file_path, file_size, file_type, sandbox_type
+  file_path, file_size, file_type, sandbox_type, accept_donations
 ) on public.projects to authenticated;
-grant update (name, description, category, version, price)
+grant update (name, description, category, version, price, accept_donations)
   on public.projects to authenticated;
 grant delete on public.projects to authenticated;
 grant select, insert, delete on public.library to authenticated;
