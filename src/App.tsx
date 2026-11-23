@@ -3837,6 +3837,7 @@ function ProjectSandboxScreen({
   const [content, setContent] = useState("")
   const [archivePreview, setArchivePreview] = useState<ArchivePreview | null>(null)
   const [pythonOutput, setPythonOutput] = useState("")
+  const [pythonInput, setPythonInput] = useState("")
   const [pythonRunning, setPythonRunning] = useState(false)
   const [type, setType] = useState<SandboxType>(() => {
     const requestedType = project.sandboxType as SandboxType | undefined
@@ -4006,7 +4007,10 @@ function ProjectSandboxScreen({
         setPythonRunning(false)
         stopPython()
       }, 25_000)
-      worker.postMessage({ code: content })
+      worker.postMessage({
+        code: content,
+        stdin: pythonInput ? pythonInput.replace(/\r\n?/g, "\n").split("\n") : [],
+      })
     } catch (reason) {
       setPythonRunning(false)
       setPythonOutput(
@@ -4081,6 +4085,37 @@ function ProjectSandboxScreen({
         {error && <div style={{ color: C.danger, marginBottom: 12 }}>{error}</div>}
         {!loading && !error && type === "python" && (
           <>
+            <label
+              htmlFor="python-stdin"
+              style={{ display: "block", color: C.text2, fontSize: 12, marginBottom: 6 }}
+            >
+              Entradas para chamadas a input()
+            </label>
+            <textarea
+              id="python-stdin"
+              value={pythonInput}
+              onChange={(event) => setPythonInput(event.target.value)}
+              placeholder={"Uma resposta por linha, por exemplo:\n1\n4\n6\nno"}
+              rows={4}
+              disabled={pythonRunning}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                resize: "vertical",
+                padding: "12px 14px",
+                marginBottom: 8,
+                background: C.surface2,
+                border: `1px solid ${C.border}`,
+                borderRadius: 12,
+                color: C.text,
+                fontSize: 13,
+                fontFamily: "monospace",
+              }}
+            />
+            <div style={{ color: C.text3, fontSize: 11, lineHeight: 1.5, marginBottom: 12 }}>
+              Cada chamada a input() consome a próxima linha. Informe todas as
+              respostas antes de executar.
+            </div>
             <Btn
               label={pythonRunning ? "Executando Python..." : "Executar Python"}
               onClick={runPython}
@@ -5802,7 +5837,15 @@ function SettingsScreen({ navigate }: { navigate: (s: Screen) => void }) {
         { icon: Moon, label: "Aparência", target: "appearance" as const },
         { icon: Globe, label: "Privacidade", target: "privacy" as const },
         { icon: CreditCard, label: "Recebimentos", target: "payment-account" as const },
-        { icon: Code2, label: "Explorador de API", target: "api-explorer" as const },
+        ...(isAdmin
+          ? [
+              {
+                icon: Code2,
+                label: "Explorador de API",
+                target: "api-explorer" as const,
+              },
+            ]
+          : []),
       ],
     },
     {
@@ -7049,8 +7092,13 @@ export default function App() {
     }
   }
 
-  const showBottomNav = mainTabs.includes(screen)
-  const activeTab = mainTabs.includes(screen) ? screen : "home"
+  const showBottomNav = mainTabs.includes(screen) || screen === "my-projects"
+  const activeTab =
+    screen === "my-projects"
+      ? "profile"
+      : mainTabs.includes(screen)
+        ? screen
+        : "home"
 
   return (
     <div className="desktop-app">

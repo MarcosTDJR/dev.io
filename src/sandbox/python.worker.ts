@@ -1,6 +1,9 @@
 import { loadPyodide } from "pyodide"
 
-type PythonRunMessage = { code: string }
+type PythonRunMessage = {
+  code: string
+  stdin: string[]
+}
 
 type WorkerScope = {
   location: Location
@@ -14,6 +17,7 @@ scope.onmessage = async (event: MessageEvent<PythonRunMessage>) => {
   try {
     let outputLength = 0
     let outputLimitReported = false
+    const inputLines = [...event.data.stdin]
     const sendOutput = (output: string) => {
       const remaining = 50_000 - outputLength
       if (remaining > 0) {
@@ -34,6 +38,7 @@ scope.onmessage = async (event: MessageEvent<PythonRunMessage>) => {
       indexURL: new URL("/pyodide/", scope.location.href).href,
       stdout: sendOutput,
       stderr: sendOutput,
+      stdin: () => inputLines.shift() ?? null,
     })
 
     const blockNetwork = () =>

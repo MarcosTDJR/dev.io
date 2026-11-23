@@ -10,6 +10,7 @@ import {
 import {
   deleteProject,
   executeApiRequest,
+  getCurrentUser,
   getMyProjects,
   updateProject,
   uploadProject,
@@ -37,6 +38,8 @@ function displayAvailability(availability: string) {
 }
 
 export default function ApiExplorerScreen({ onBack }: Props) {
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null)
+  const [permissionError, setPermissionError] = useState("")
   const [query, setQuery] = useState("")
   const [selectedRouteId, setSelectedRouteId] = useState("health")
   const [requestMethod, setRequestMethod] = useState<ApiMethod>("GET")
@@ -63,6 +66,26 @@ export default function ApiExplorerScreen({ onBack }: Props) {
   const selectedRoute = apiRouteCatalog.find(
     (route) => route.id === selectedRouteId,
   )
+
+  useEffect(() => {
+    let active = true
+    getCurrentUser()
+      .then(({ user }) => {
+        if (active) setIsAdmin(Boolean(user?.isAdmin))
+      })
+      .catch((reason) => {
+        if (active) {
+          setPermissionError(
+            reason instanceof Error
+              ? reason.message
+              : "Não foi possível verificar as permissões administrativas.",
+          )
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   useEffect(() => {
     if (!responseModal) return
@@ -118,8 +141,8 @@ export default function ApiExplorerScreen({ onBack }: Props) {
   }
 
   useEffect(() => {
-    void refreshProjects(false)
-  }, [])
+    if (isAdmin) void refreshProjects(false)
+  }, [isAdmin])
 
   const selectRoute = (routeId: string) => {
     const route = apiRouteCatalog.find((item) => item.id === routeId)
@@ -324,6 +347,29 @@ export default function ApiExplorerScreen({ onBack }: Props) {
     } finally {
       setCrudBusy(false)
     }
+  }
+
+  if (isAdmin !== true) {
+    return (
+      <div className="phone-scroll settings-page api-explorer">
+        <header className="api-explorer-header">
+          <button type="button" className="api-explorer-back" onClick={onBack}>
+            Voltar às configurações
+          </button>
+          <h1>
+            {permissionError
+              ? "Não foi possível verificar o acesso"
+              : "Acesso restrito"}
+          </h1>
+          <p role={permissionError ? "alert" : undefined}>
+            {permissionError ||
+              (isAdmin === null
+                ? "Verificando permissões administrativas..."
+                : "O explorador de API está disponível somente para administradores.")}
+          </p>
+        </header>
+      </div>
+    )
   }
 
   return (
