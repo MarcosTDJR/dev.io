@@ -5046,8 +5046,21 @@ function PublicProfileScreen({
       ) : profile ? (
         <>
           <section className="public-profile-hero">
-            <div className="public-profile-avatar" aria-hidden="true">
-              {profile.name.trim().charAt(0).toUpperCase() || "D"}
+            <div className="public-profile-avatar">
+              {profile.avatarUrl ? (
+                <img
+                  src={profile.avatarUrl}
+                  alt={`Foto de ${profile.name}`}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    borderRadius: "50%",
+                    objectFit: "cover",
+                  }}
+                />
+              ) : (
+                profile.name.trim().charAt(0).toUpperCase() || "D"
+              )}
             </div>
             <div className="public-profile-name">{profile.name}</div>
             <div className="public-profile-username">@{profile.username}</div>

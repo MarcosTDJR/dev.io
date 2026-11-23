@@ -51,6 +51,7 @@ export type PublicProfile = {
   username: string
   name: string
   bio: string
+  avatarUrl: string | null
   followerCount: number
   followingCount: number
   isFollowing: boolean
@@ -516,11 +517,21 @@ export async function getPublicProfile(username: string): Promise<PublicProfile>
 
   const { data: profile, error: profileError } = await supabase
     .from("profiles")
-    .select("id, username, display_name, bio")
+    .select("id, username, display_name, bio, avatar_path")
     .eq("username", normalizedUsername)
     .maybeSingle()
   throwIfError(profileError)
   if (!profile) throw new Error("Este perfil não foi encontrado.")
+
+  let avatarUrl: string | null = null
+  if (profile.avatar_path) {
+    const { data, error } = await supabase.storage
+      .from("devio-avatars")
+      .createSignedUrl(profile.avatar_path, 3600)
+    throwIfError(error)
+    if (!data) throw new Error("Não foi possível gerar o endereço da foto.")
+    avatarUrl = data.signedUrl
+  }
 
   const [
     { data: projectRows, error: projectsError },
@@ -566,6 +577,7 @@ export async function getPublicProfile(username: string): Promise<PublicProfile>
     username: profile.username,
     name: profile.display_name,
     bio: profile.bio,
+    avatarUrl,
     followerCount: followerCount || 0,
     followingCount: followingCount || 0,
     isFollowing,
